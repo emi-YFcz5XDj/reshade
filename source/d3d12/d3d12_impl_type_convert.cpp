@@ -105,7 +105,6 @@ auto reshade::d3d12::convert_barrier_layout_to_usage(D3D12_BARRIER_LAYOUT layout
 	case D3D12_BARRIER_LAYOUT_COMMON:
 	case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_COMMON:
 	case D3D12_BARRIER_LAYOUT_COMPUTE_QUEUE_COMMON:
-	case D3D12_BARRIER_LAYOUT_VIDEO_QUEUE_COMMON:
 		return api::resource_usage::general;
 	case D3D12_BARRIER_LAYOUT_GENERIC_READ:
 	case D3D12_BARRIER_LAYOUT_DIRECT_QUEUE_GENERIC_READ:
@@ -331,14 +330,14 @@ reshade::api::sampler_desc reshade::d3d12::convert_sampler_desc(const D3D12_STAT
 	switch (internal_desc.BorderColor)
 	{
 	case D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK:
+		std::fill_n(desc.border_color, 4, 0.0f);
 		break;
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_BLACK_UINT:
-		desc.border_color[3] = 1.0f;
+		std::fill_n(desc.border_color, 3, 0.0f);
 		break;
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE:
 	case D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE_UINT:
-		std::fill_n(desc.border_color, 4, 1.0f);
 		break;
 	}
 
@@ -432,8 +431,9 @@ void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12
 	if ((desc.flags & api::resource_flags::shared) != 0)
 		heap_flags |= D3D12_HEAP_FLAG_SHARED;
 
-	// Dynamic resources do not exist in D3D12
+	// Dynamic or immutable resources do not exist in D3D12
 	assert((desc.flags & api::resource_flags::dynamic) == 0);
+	assert((desc.flags & api::resource_flags::immutable) == 0);
 }
 void reshade::d3d12::convert_resource_desc(const api::resource_desc &desc, D3D12_RESOURCE_DESC1 &internal_desc, D3D12_HEAP_PROPERTIES &heap_props, D3D12_HEAP_FLAGS &heap_flags)
 {
@@ -1731,9 +1731,9 @@ auto reshade::d3d12::convert_descriptor_type(D3D12_DESCRIPTOR_RANGE_TYPE type) -
 		assert(false);
 		[[fallthrough]];
 	case D3D12_DESCRIPTOR_RANGE_TYPE_SRV:
-		return api::descriptor_type::texture_shader_resource_view;
+		return api::descriptor_type::shader_resource_view;
 	case D3D12_DESCRIPTOR_RANGE_TYPE_UAV:
-		return api::descriptor_type::texture_unordered_access_view;
+		return api::descriptor_type::unordered_access_view;
 	case D3D12_DESCRIPTOR_RANGE_TYPE_CBV:
 		return api::descriptor_type::constant_buffer;
 	case D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER:

@@ -5,10 +5,13 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_swapchain.hpp"
+#include "d3d9_impl_type_convert.hpp"
 #include "dll_log.hpp" // Include late to get 'hr_to_string' helper function
 #include "addon_manager.hpp"
 #include "runtime_manager.hpp"
 #include <algorithm> // std::find
+
+using reshade::d3d9::to_handle;
 
 bool Direct3DSwapChain9::is_presenting_entire_surface(const RECT *source_rect, HWND hwnd)
 {
@@ -46,9 +49,9 @@ bool Direct3DSwapChain9::check_and_upgrade_interface(REFIID riid)
 {
 	if (riid == __uuidof(this) ||
 		riid == __uuidof(IUnknown) ||
-		riid == __uuidof(IDirect3DSwapChain9))
+		riid == __uuidof(IDirect3DSwapChain9))   // {794950F2-ADFC-458a-905E-10A10B0B503B}
 		return true;
-	if (riid != __uuidof(IDirect3DSwapChain9Ex))
+	if (riid != __uuidof(IDirect3DSwapChain9Ex)) // {91886CAF-1C3D-4d2e-A0AB-3E4C7D8D3303}
 		return false;
 
 	if (!_extended_interface)
@@ -76,6 +79,15 @@ HRESULT STDMETHODCALLTYPE Direct3DSwapChain9::QueryInterface(REFIID riid, void *
 	{
 		AddRef();
 		*ppvObj = this;
+		return S_OK;
+	}
+
+	// Interface ID to query the original object from a proxy object
+	constexpr GUID IID_UnwrappedObject = { 0x7f2c9a11, 0x3b4e, 0x4d6a, { 0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42 } }; // {7F2C9A11-3B4E-4D6A-812F-5E9CD37A1B42}
+	if (riid == IID_UnwrappedObject)
+	{
+		_orig->AddRef();
+		*ppvObj = _orig;
 		return S_OK;
 	}
 
@@ -120,19 +132,11 @@ ULONG   STDMETHODCALLTYPE Direct3DSwapChain9::Release()
 
 HRESULT STDMETHODCALLTYPE Direct3DSwapChain9::Present(const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags)
 {
-	// Skip when no presentation is requested
-	if (((dwFlags & D3DPRESENT_DONOTFLIP) == 0) &&
-		// Also skip when the same frame is presented multiple times
-		((dwFlags & D3DPRESENT_DONOTWAIT) == 0 || !_was_still_drawing_last_frame))
-	{
-		assert(!_was_still_drawing_last_frame);
-
-		on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-	}
+	on_present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
 	const HRESULT hr = _orig->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 
-	handle_device_loss(hr);
+	on_finish_present(hr);
 
 	return hr;
 }
@@ -183,7 +187,7 @@ HRESULT STDMETHODCALLTYPE Direct3DSwapChain9::GetDisplayModeEx(D3DDISPLAYMODEEX 
 	return static_cast<IDirect3DSwapChain9Ex *>(_orig)->GetDisplayModeEx(pMode, pRotation);
 }
 
-void Direct3DSwapChain9::on_init(bool resize)
+void Direct3DSwapChain9::on_init([[maybe_unused]] bool resize)
 {
 	assert(!_is_initialized);
 
@@ -192,16 +196,25 @@ void Direct3DSwapChain9::on_init(bool resize)
 
 	D3DPRESENT_PARAMETERS pp = {};
 	_orig->GetPresentParameters(&pp);
+
+	// Communicate implicit back buffer render target view to add-ons
+	get_back_buffer();
+
+	reshade::invoke_addon_event<reshade::addon_event::init_resource_view>(
+		_device,
+		to_handle(static_cast<IDirect3DResource9 *>(_back_buffer.get())),
+		reshade::api::resource_usage::render_target,
+		reshade::api::resource_view_desc(pp.MultiSampleType >= D3DMULTISAMPLE_2_SAMPLES ? reshade::api::resource_view_type::texture_2d_multisample : reshade::api::resource_view_type::texture_2d, reshade::d3d9::convert_format(pp.BackBufferFormat), 0, 1, 0, 1),
+		to_handle(_back_buffer.get()));
+
 	reshade::invoke_addon_event<reshade::addon_event::set_fullscreen_state>(this, pp.Windowed == FALSE, nullptr);
-#else
-	UNREFERENCED_PARAMETER(resize);
 #endif
 
 	reshade::init_effect_runtime(this);
 
 	_is_initialized = true;
 }
-void Direct3DSwapChain9::on_reset(bool resize)
+void Direct3DSwapChain9::on_reset([[maybe_unused]] bool resize)
 {
 	// May be called without a previous call to 'on_init' if a device reset had failed
 	if (!_is_initialized)
@@ -210,9 +223,9 @@ void Direct3DSwapChain9::on_reset(bool resize)
 	reshade::reset_effect_runtime(this);
 
 #if RESHADE_ADDON
+	reshade::invoke_addon_event<reshade::addon_event::destroy_resource_view>(_device, to_handle(_back_buffer.get()));
+
 	reshade::invoke_addon_event<reshade::addon_event::destroy_swapchain>(this, resize);
-#else
-	UNREFERENCED_PARAMETER(resize);
 #endif
 
 	_back_buffer.reset();
@@ -220,8 +233,17 @@ void Direct3DSwapChain9::on_reset(bool resize)
 	_is_initialized = false;
 }
 
-void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] const RECT *dest_rect, HWND window_override, [[maybe_unused]] const RGNDATA *dirty_region)
+void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] const RECT *dest_rect, HWND window_override, [[maybe_unused]] const RGNDATA *dirty_region, DWORD flags)
 {
+	// Skip when no presentation is requested
+	if ((flags & D3DPRESENT_DONOTFLIP) != 0)
+		return;
+
+	// Also skip when the same frame is presented multiple times
+	if ((flags & D3DPRESENT_DONOTWAIT) != 0 && _was_still_drawing_last_frame)
+		return;
+	assert(!_was_still_drawing_last_frame);
+
 	assert(_is_initialized);
 
 	if (SUCCEEDED(_device->_orig->BeginScene()))
@@ -240,7 +262,7 @@ void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] co
 
 		// Only call into the effect runtime if the entire surface is presented, to avoid partial updates messing up effects and the GUI
 		if (is_presenting_entire_surface(source_rect, window_override))
-			reshade::present_effect_runtime(this, _device);
+			reshade::present_effect_runtime(this);
 
 		_hwnd = nullptr;
 
@@ -248,7 +270,7 @@ void Direct3DSwapChain9::on_present(const RECT *source_rect, [[maybe_unused]] co
 	}
 }
 
-void Direct3DSwapChain9::handle_device_loss(HRESULT hr)
+void Direct3DSwapChain9::on_finish_present(HRESULT hr)
 {
 	_was_still_drawing_last_frame = (hr == D3DERR_WASSTILLDRAWING);
 
@@ -258,4 +280,10 @@ void Direct3DSwapChain9::handle_device_loss(HRESULT hr)
 		reshade::log::message(reshade::log::level::error, "Device was lost with %s!", reshade::log::hr_to_string(hr).c_str());
 		// Do not clean up resources, since application has to call 'IDirect3DDevice9::Reset' anyway, which will take care of that
 	}
+#if RESHADE_ADDON
+	else if (!_was_still_drawing_last_frame)
+	{
+		reshade::invoke_addon_event<reshade::addon_event::finish_present>(_device, this);
+	}
+#endif
 }

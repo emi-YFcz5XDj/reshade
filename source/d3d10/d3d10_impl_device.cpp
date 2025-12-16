@@ -43,7 +43,7 @@ bool reshade::d3d10::device_impl::get_property(api::device_properties property, 
 		if (const auto dxgi_adapter = adapter_from_device(_orig))
 		{
 			LARGE_INTEGER umd_version = {};
-			dxgi_adapter->CheckInterfaceSupport(__uuidof(IDXGIDevice), &umd_version);
+			dxgi_adapter->CheckInterfaceSupport(IID_IDXGIDevice, &umd_version);
 			*static_cast<uint32_t *>(data) = LOWORD(umd_version.LowPart) + (HIWORD(umd_version.LowPart) % 10) * 10000;
 			return true;
 		}
@@ -70,6 +70,14 @@ bool reshade::d3d10::device_impl::get_property(api::device_properties property, 
 		{
 			static_assert(std::size(adapter_desc.Description) <= 256);
 			utf8::unchecked::utf16to8(adapter_desc.Description, adapter_desc.Description + std::size(adapter_desc.Description), static_cast<char *>(data));
+			return true;
+		}
+		return false;
+	case api::device_properties::adapter_luid:
+		if (DXGI_ADAPTER_DESC adapter_desc;
+			adapter_from_device(_orig, &adapter_desc))
+		{
+			*static_cast<LUID *>(data) = adapter_desc.AdapterLuid;
 			return true;
 		}
 		return false;
@@ -125,6 +133,10 @@ bool reshade::d3d10::device_impl::check_capability(api::device_caps capability) 
 	case api::device_caps::shared_fence_nt_handle:
 	case api::device_caps::amplification_and_mesh_shader:
 	case api::device_caps::ray_tracing:
+		return false;
+	case api::device_caps::update_buffer_region_command:
+	case api::device_caps::update_texture_region_command:
+		return true;
 	default:
 		return false;
 	}

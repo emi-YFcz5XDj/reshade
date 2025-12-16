@@ -4,13 +4,20 @@
  */
 
 #include "dxgi_device.hpp"
+#include "dxgi_adapter.hpp"
 #include "dll_log.hpp"
 
-DXGIDevice::DXGIDevice(IDXGIDevice1 *original) :
+DXGIDevice::DXGIDevice(IDXGIAdapter *adapter, IDXGIDevice1 *original) :
 	_orig(original),
-	_interface_version(1)
+	_interface_version(1),
+	_parent_adapter(adapter)
 {
-	assert(_orig != nullptr);
+	assert(_orig != nullptr && _parent_adapter != nullptr);
+	_parent_adapter->AddRef();
+}
+DXGIDevice::~DXGIDevice()
+{
+	_parent_adapter->Release();
 }
 
 bool DXGIDevice::check_and_upgrade_interface(REFIID riid)
@@ -21,11 +28,11 @@ bool DXGIDevice::check_and_upgrade_interface(REFIID riid)
 		return true;
 
 	static constexpr IID iid_lookup[] = {
-		__uuidof(IDXGIDevice),
-		__uuidof(IDXGIDevice1),
-		__uuidof(IDXGIDevice2),
-		__uuidof(IDXGIDevice3),
-		__uuidof(IDXGIDevice4),
+		__uuidof(IDXGIDevice),  // {54EC77FA-1377-44E6-8C32-88FD5F44C84C}
+		__uuidof(IDXGIDevice1), // {77DB970F-6276-48BA-BA28-070143b4392C}
+		__uuidof(IDXGIDevice2), // {05008617-FBFD-4051-A790-144884b4f6A9}
+		__uuidof(IDXGIDevice3), // {6007896C-3244-4AFD-BF18-A6D3BEDA5023}
+		__uuidof(IDXGIDevice4), // {95B4F95F-D8DA-4CA4-9EE6-3B76D5968A10}
 	};
 
 	for (unsigned short version = 0; version < ARRAYSIZE(iid_lookup); ++version)
@@ -54,12 +61,12 @@ bool DXGIDevice::check_and_upgrade_interface(REFIID riid)
 
 HRESULT STDMETHODCALLTYPE DXGIDevice::GetParent(REFIID riid, void **ppParent)
 {
-	return _orig->GetParent(riid, ppParent);
+	return _parent_adapter->QueryInterface(riid, ppParent);
 }
 
 HRESULT STDMETHODCALLTYPE DXGIDevice::GetAdapter(IDXGIAdapter **pAdapter)
 {
-	return _orig->GetAdapter(pAdapter);
+	return _parent_adapter->QueryInterface(pAdapter);
 }
 HRESULT STDMETHODCALLTYPE DXGIDevice::CreateSurface(const DXGI_SURFACE_DESC *pDesc, UINT NumSurfaces, DXGI_USAGE Usage, const DXGI_SHARED_RESOURCE *pSharedResource, IDXGISurface **ppSurface)
 {

@@ -1,9 +1,9 @@
 ReShade API
 ===========
 
-The ReShade API lets you interact with the resources and rendering commands of applications ReShade was loaded into. It [abstracts](#events) away differences between the various graphics API ReShade supports (Direct3D 9/10/11/12, OpenGL and Vulkan), to make it possible to write add-ons that work across a wide range of applications, regardless of the graphics API they use.
+The ReShade API lets you interact with the resources and rendering commands of applications ReShade was loaded into. It abstracts away differences between the various graphics API ReShade supports (Direct3D 9/10/11/12, OpenGL and Vulkan), to make it possible to write add-ons that work across a wide range of applications, regardless of the graphics API they use.
 
-A ReShade add-on is a DLL or part of the application that uses the header-only ReShade API to register callbacks for events and do work in those callbacks after they were invoked by ReShade. There are no further requirements, no functions need to be exported and no libraries need to be linked against (although linking against ReShade is supported as well by defining `RESHADE_API_LIBRARY` before including the headers if so desired). Simply add the [include directory from the ReShade repository](https://github.com/crosire/reshade/tree/main/include) to your project and include the `reshade.hpp` header to get started.
+A ReShade add-on is a DLL or part of the application that uses the header-only ReShade API to register callbacks for [events](#events) and do work in those callbacks after they were invoked by ReShade. There are no further requirements, no functions need to be exported and no libraries need to be linked against (although linking against ReShade is supported as well by defining `RESHADE_API_LIBRARY` before including the headers if so desired). Simply add the [include directory from the ReShade repository](https://github.com/crosire/reshade/tree/main/include) to your project and include the `reshade.hpp` header to get started.
 
 An add-on may optionally export an `AddonInit` function if more complicated one-time initialization than possible in `DllMain` is required. It will be called by ReShade right after loading the add-on module.
 ```cpp
@@ -127,7 +127,7 @@ static bool on_draw(reshade::api::command_list *cmd_list, uint32_t vertices, uin
 Showing results on the screen is done through a `reshade::api::swapchain` object. This is a collection of back buffers that the application can render into, which will eventually be presented to the screen. There may be multiple swap chains, if for example the application is rendering to multiple windows, or to a screen and a VR headset. ReShade again will call the `reshade::addon_event::init_swapchain` event after such an object was created by the application (and `reshade::addon_event::destroy_swapchain` on destruction). In addition ReShade will call the `reshade::addon_event::create_swapchain` event before a swap chain is created, so an add-on may modify its description before that happens. For example, to force the resolution to a specific value, one can do the following:
 ```cpp
 // Example callback function that can be registered via 'reshade::register_event<reshade::addon_event::create_swapchain>(&on_create_swapchain)'.
-static bool on_create_swapchain(reshade::api::swapchain_desc &desc, void *hwnd)
+static bool on_create_swapchain(reshade::api::device_api api, reshade::api::swapchain_desc &desc, void *hwnd)
 {
     // Change resolution to 1920x1080 if the application is trying to create a swap chain at 800x600.
     if (desc.back_buffer.texture.width == 800 &&
@@ -152,12 +152,10 @@ Buffers and textures are referenced via `reshade::api::resource` handles. Depth-
 ## Overlays
 
 It is also supported to add an overlay, which can e.g. be used to display debug information or interact with the user in-application.
-Overlays are created with the use of the docking branch of [Dear ImGui](https://github.com/ocornut/imgui/tree/v1.91.8-docking). Including `reshade.hpp` after [`imgui.h`](https://github.com/ocornut/imgui/blob/v1.91.8-docking/imgui.h) will automatically overwrite all Dear ImGui functions to use the instance created and managed by ReShade. This means all you have to do is include these two headers and use Dear ImGui as usual (without having to build its source code files):
+Overlays are created with the use of the docking branch of [Dear ImGui](https://github.com/ocornut/imgui/tree/v1.92.2b-docking). Including `reshade.hpp` after [`imgui.h`](https://github.com/ocornut/imgui/blob/v1.92.2b-docking/imgui.h) will automatically overwrite all Dear ImGui functions to use the instance created and managed by ReShade. This means all you have to do is include these two headers and use Dear ImGui as usual (without having to build its source code files):
 
 ```cpp
 #define IMGUI_DISABLE_INCLUDE_IMCONFIG_H
-#define ImTextureID ImU64 // Change ImGui texture ID type to that of a 'reshade::api::resource_view' handle
-
 #include <imgui.h>
 #include <reshade.hpp>
 

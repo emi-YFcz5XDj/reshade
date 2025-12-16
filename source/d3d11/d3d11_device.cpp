@@ -15,8 +15,8 @@
 
 using reshade::d3d11::to_handle;
 
-D3D11Device::D3D11Device(IDXGIDevice1 *original_dxgi_device, ID3D11Device *original) :
-	DXGIDevice(original_dxgi_device), device_impl(original)
+D3D11Device::D3D11Device(IDXGIAdapter *adapter, IDXGIDevice1 *original_dxgi_device, ID3D11Device *original) :
+	DXGIDevice(adapter, original_dxgi_device), device_impl(original)
 {
 	assert(_orig != nullptr);
 
@@ -70,12 +70,12 @@ D3D11Device::~D3D11Device()
 bool D3D11Device::check_and_upgrade_interface(REFIID riid)
 {
 	static constexpr IID iid_lookup[] = {
-		__uuidof(ID3D11Device),
-		__uuidof(ID3D11Device1),
-		__uuidof(ID3D11Device2),
-		__uuidof(ID3D11Device3),
-		__uuidof(ID3D11Device4),
-		__uuidof(ID3D11Device5),
+		__uuidof(ID3D11Device),  // {DB6F6DDB-AC77-4E88-8253-819DF9BBF140}
+		__uuidof(ID3D11Device1), // {A04BFB29-08EF-43D6-A49C-A9BDBDCBE686}
+		__uuidof(ID3D11Device2), // {9D06DFFA-D1E5-4D07-83A8-1BB123F2F841}
+		__uuidof(ID3D11Device3), // {A05C8C37-D2C6-4732-B3A0-9CE0B0DC9AE6}
+		__uuidof(ID3D11Device4), // {8992AB71-02E6-4B8D-BA48-B056DCDA42C4}
+		__uuidof(ID3D11Device5), // {8FFDE202-A0E7-45DF-9E01-E837801B5EA0}
 	};
 
 	for (unsigned short version = 0; version < ARRAYSIZE(iid_lookup); ++version)
@@ -114,12 +114,23 @@ HRESULT STDMETHODCALLTYPE D3D11Device::QueryInterface(REFIID riid, void **ppvObj
 		return S_OK;
 	}
 
+	// Do not proxy calls coming from DXGI
+	// The 'IDXGIOutput1::DuplicateOutput' implementation for example queries the device, then gets the adapter from the device and attempts to call an internal function on that adapter object, which crashes if it is the proxied object
+	extern std::filesystem::path get_system_path();
+	if (HMODULE return_module = nullptr;
+		GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, reinterpret_cast<LPCWSTR>(_ReturnAddress()), &return_module) &&
+		return_module == GetModuleHandleW((get_system_path() / L"dxgi.dll").c_str()))
+	{
+		return _orig->QueryInterface(riid, ppvObj);
+	}
+
 	if (check_and_upgrade_interface(riid))
 	{
 		// The Microsoft Media Foundation library unfortunately checks that the device pointers of the different D3D11 video interfaces it uses match
 		// Since the D3D11 video interfaces ('ID3D11VideoContext' etc.) are not hooked, they return a pointer to the original device when queried via 'GetDevice', rather than this proxy one
 		// To make things work, return a pointer to the original device here too, but only when video support is enabled and therefore it is possible this device was created by the Microsoft Media Foundation library
-		if (_orig->GetCreationFlags() & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
+		if (riid == __uuidof(ID3D11Device) &&
+			_orig->GetCreationFlags() & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
 		{
 			_orig->AddRef();
 			*ppvObj = _orig;
@@ -141,12 +152,23 @@ HRESULT STDMETHODCALLTYPE D3D11Device::QueryInterface(REFIID riid, void **ppvObj
 		return S_OK;
 	}
 
-	if (riid == __uuidof(ID3D11On12Device) ||
-		riid == __uuidof(ID3D11On12Device1) ||
-		riid == __uuidof(ID3D11On12Device2))
+	// Interface ID to query the original object from a proxy object
+	constexpr GUID IID_UnwrappedObject = { 0x7f2c9a11, 0x3b4e, 0x4d6a, { 0x81, 0x2f, 0x5e, 0x9c, 0xd3, 0x7a, 0x1b, 0x42 } }; // {7F2C9A11-3B4E-4D6A-812F-5E9CD37A1B42}
+	if (riid == IID_UnwrappedObject)
+	{
+		_orig->AddRef();
+		*ppvObj = _orig;
+		return S_OK;
+	}
+
+	if (riid == __uuidof(ID3D11On12Device) ||  // {85611E73-70A9-490E-9614-A9E302777904}
+		riid == __uuidof(ID3D11On12Device1) || // {BDB64DF4-EA2F-4C70-B861-AAAB1258BB5D}
+		riid == __uuidof(ID3D11On12Device2))   // {DC90F331-4740-43FA-866E-67F12CB58223}
 	{
 		if (_d3d11on12_device != nullptr)
 			return _d3d11on12_device->QueryInterface(riid, ppvObj);
+		else
+			return E_NOINTERFACE;
 	}
 
 	// Unimplemented interfaces:
@@ -193,12 +215,16 @@ ULONG   STDMETHODCALLTYPE D3D11Device::Release()
 		"Destroying ID3D11Device%hu object %p (%p) and IDXGIDevice%hu object %p (%p).",
 		interface_version, static_cast<ID3D11Device *>(this), orig, DXGIDevice::_interface_version, static_cast<IDXGIDevice1 *>(this), DXGIDevice::_orig);
 #endif
-	delete this;
+	// Only call destructor and do not yet free memory before calling final 'Release' below
+	// Some resources may still be alive here (e.g. because of a shared resource from the Epic Games overlay), which will then call the resource destruction callbacks during the final device release and still access this memory
+	this->~D3D11Device();
 
 	// Note: At this point the immediate context should have been deleted by the release above (so do not access it)
 	const ULONG ref_orig = orig->Release();
 	if (ref_orig != 0) // Verify internal reference count
 		reshade::log::message(reshade::log::level::warning, "Reference count for ID3D11Device%hu object %p (%p) is inconsistent (%lu).", interface_version, static_cast<ID3D11Device *>(this), orig, ref_orig);
+	else
+		operator delete(this, sizeof(D3D11Device));
 	return 0;
 }
 
@@ -233,7 +259,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateBuffer(const D3D11_BUFFER_DESC *pDe
 	{
 		ID3D11Buffer *const resource = *ppBuffer;
 
-		reshade::hooks::install("ID3D11Buffer::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Buffer::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -288,7 +314,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateTexture1D(const D3D11_TEXTURE1D_DES
 	{
 		ID3D11Texture1D *const resource = *ppTexture1D;
 
-		reshade::hooks::install("ID3D11Texture1D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Texture1D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -342,7 +368,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateTexture2D(const D3D11_TEXTURE2D_DES
 	{
 		ID3D11Texture2D *const resource = *ppTexture2D;
 
-		reshade::hooks::install("ID3D11Texture2D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Texture2D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -396,7 +422,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateTexture3D(const D3D11_TEXTURE3D_DES
 	{
 		ID3D11Texture3D *const resource = *ppTexture3D;
 
-		reshade::hooks::install("ID3D11Texture3D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Texture3D::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -985,6 +1011,16 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateBlendState(const D3D11_BLEND_DESC *
 	if (ppBlendState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateBlendState(pBlendStateDesc, ppBlendState);
 
+	// Default blend state (https://learn.microsoft.com/windows/win32/api/d3d11/ns-d3d11-d3d11_blend_desc)
+	static constexpr D3D11_BLEND_DESC default_blend_desc = {
+		/* AlphaToCoverageEnable = */
+		FALSE,
+		/* IndependentBlendEnable = */
+		FALSE,
+		/* RenderTarget[0] = */
+		{ { FALSE, D3D11_BLEND_ONE, D3D11_BLEND_ZERO, D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO, D3D11_BLEND_OP_ADD, D3D11_COLOR_WRITE_ENABLE_ALL } }
+	};
+
 	D3D11_BLEND_DESC internal_desc = {};
 	auto desc = reshade::d3d11::convert_blend_desc(pBlendStateDesc);
 	reshade::api::dynamic_state dynamic_states[2] = { reshade::api::dynamic_state::blend_constant, reshade::api::dynamic_state::sample_mask };
@@ -1009,7 +1045,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateBlendState(const D3D11_BLEND_DESC *
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D11_BLEND_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1031,6 +1069,26 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateDepthStencilState(const D3D11_DEPTH
 #if RESHADE_ADDON
 	if (ppDepthStencilState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateDepthStencilState(pDepthStencilDesc, ppDepthStencilState);
+
+	// Default depth-stencil state (https://learn.microsoft.com/windows/win32/api/d3d11/ns-d3d11-d3d11_depth_stencil_desc)
+	static constexpr D3D11_DEPTH_STENCIL_DESC default_depth_stencil_desc = {
+		/* DepthEnable = */
+		TRUE,
+		/* DepthWriteMask = */
+		D3D11_DEPTH_WRITE_MASK_ALL,
+		/* DepthFunc = */
+		D3D11_COMPARISON_LESS,
+		/* StencilEnable = */
+		FALSE,
+		/* StencilReadMask = */
+		D3D11_DEFAULT_STENCIL_READ_MASK,
+		/* StencilWriteMask = */
+		D3D11_DEFAULT_STENCIL_WRITE_MASK,
+		/* FrontFace = */
+		{ D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_ALWAYS },
+		/* BackFace = */
+		{ D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_ALWAYS }
+	};
 
 	D3D11_DEPTH_STENCIL_DESC internal_desc = {};
 	auto desc = reshade::d3d11::convert_depth_stencil_desc(pDepthStencilDesc);
@@ -1056,7 +1114,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateDepthStencilState(const D3D11_DEPTH
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pDepthStencilDesc, &default_depth_stencil_desc, sizeof(D3D11_DEPTH_STENCIL_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1078,6 +1138,30 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState(const D3D11_RASTERI
 #if RESHADE_ADDON
 	if (ppRasterizerState == nullptr) // This can happen when application only wants to validate input parameters
 		return _orig->CreateRasterizerState(pRasterizerDesc, ppRasterizerState);
+
+	// Default rasterizer state (https://learn.microsoft.com/windows/win32/api/d3d11/ns-d3d11-d3d11_rasterizer_desc)
+	static constexpr D3D11_RASTERIZER_DESC default_rasterizer_desc = {
+		/* FillMode = */
+		D3D11_FILL_SOLID,
+		/* CullMode = */
+		D3D11_CULL_BACK,
+		/* FrontCounterClockwise = */
+		FALSE,
+		/* DepthBias = */
+		0,
+		/* SlopeScaledDepthBias = */
+		0.0f,
+		/* DepthBiasClamp = */
+		0.0f,
+		/* DepthClipEnable = */
+		TRUE,
+		/* ScissorEnable = */
+		FALSE,
+		/* MultisampleEnable = */
+		FALSE,
+		/* AntialiasedLineEnable = */
+		FALSE
+	};
 
 	D3D11_RASTERIZER_DESC internal_desc = {};
 	auto desc = reshade::d3d11::convert_rasterizer_desc(pRasterizerDesc);
@@ -1101,7 +1185,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState(const D3D11_RASTERI
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default rasterizer state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pRasterizerDesc, &default_rasterizer_desc, sizeof(D3D11_RASTERIZER_DESC)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1380,6 +1466,16 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateBlendState1(const D3D11_BLEND_DESC1
 	if (ppBlendState == nullptr) // This can happen when application only wants to validate input parameters
 		return static_cast<ID3D11Device1 *>(_orig)->CreateBlendState1(pBlendStateDesc, ppBlendState);
 
+	// Default blend state (https://learn.microsoft.com/windows/win32/api/d3d11_1/ns-d3d11_1-d3d11_blend_desc1)
+	static constexpr D3D11_BLEND_DESC1 default_blend_desc = {
+		/* AlphaToCoverageEnable = */
+		FALSE,
+		/* IndependentBlendEnable = */
+		FALSE,
+		/* RenderTarget[0] = */
+		{ { FALSE, FALSE, D3D11_BLEND_ONE, D3D11_BLEND_ZERO, D3D11_BLEND_OP_ADD, D3D11_BLEND_ONE, D3D11_BLEND_ZERO, D3D11_BLEND_OP_ADD, D3D11_LOGIC_OP_NOOP, D3D11_COLOR_WRITE_ENABLE_ALL } }
+	};
+
 	D3D11_BLEND_DESC1 internal_desc = {};
 	auto desc = reshade::d3d11::convert_blend_desc(pBlendStateDesc);
 	reshade::api::dynamic_state dynamic_states[2] = { reshade::api::dynamic_state::blend_constant, reshade::api::dynamic_state::sample_mask };
@@ -1404,7 +1500,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateBlendState1(const D3D11_BLEND_DESC1
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default blend state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pBlendStateDesc, &default_blend_desc, sizeof(D3D11_BLEND_DESC1)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1429,6 +1527,32 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState1(const D3D11_RASTER
 	if (ppRasterizerState == nullptr) // This can happen when application only wants to validate input parameters
 		return static_cast<ID3D11Device1 *>(_orig)->CreateRasterizerState1(pRasterizerDesc, ppRasterizerState);
 
+	// Default rasterizer state (https://learn.microsoft.com/windows/win32/api/d3d11_1/ns-d3d11_1-d3d11_rasterizer_desc1)
+	static constexpr D3D11_RASTERIZER_DESC1 default_rasterizer_desc = {
+		/* FillMode = */
+		D3D11_FILL_SOLID,
+		/* CullMode = */
+		D3D11_CULL_BACK,
+		/* FrontCounterClockwise = */
+		FALSE,
+		/* DepthBias = */
+		0,
+		/* SlopeScaledDepthBias = */
+		0.0f,
+		/* DepthBiasClamp = */
+		0.0f,
+		/* DepthClipEnable = */
+		TRUE,
+		/* ScissorEnable = */
+		FALSE,
+		/* MultisampleEnable = */
+		FALSE,
+		/* AntialiasedLineEnable = */
+		FALSE,
+		/* ForcedSampleCount = */
+		0
+	};
+
 	D3D11_RASTERIZER_DESC1 internal_desc = {};
 	auto desc = reshade::d3d11::convert_rasterizer_desc(pRasterizerDesc);
 
@@ -1451,7 +1575,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState1(const D3D11_RASTER
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default rasterizer state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pRasterizerDesc, &default_rasterizer_desc, sizeof(D3D11_RASTERIZER_DESC1)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));
@@ -1705,7 +1831,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateTexture2D1(const D3D11_TEXTURE2D_DE
 	{
 		ID3D11Texture2D1 *const resource = *ppTexture2D;
 
-		reshade::hooks::install("ID3D11Texture2D1::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Texture2D1::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -1761,7 +1887,7 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateTexture3D1(const D3D11_TEXTURE3D_DE
 	{
 		ID3D11Texture3D1 *const resource = *ppTexture3D;
 
-		reshade::hooks::install("ID3D11Texture3D1::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, reinterpret_cast<reshade::hook::address>(&ID3D11Resource_GetDevice));
+		reshade::hooks::install("ID3D11Texture3D1::GetDevice", reshade::hooks::vtable_from_instance(resource), 3, &ID3D11Resource_GetDevice);
 
 #if RESHADE_ADDON
 		reshade::invoke_addon_event<reshade::addon_event::init_resource>(this, desc, reinterpret_cast<const reshade::api::subresource_data *>(pInitialData), reshade::api::resource_usage::general, to_handle(resource));
@@ -1791,6 +1917,34 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState2(const D3D11_RASTER
 	if (ppRasterizerState == nullptr) // This can happen when application only wants to validate input parameters
 		return static_cast<ID3D11Device3 *>(_orig)->CreateRasterizerState2(pRasterizerDesc, ppRasterizerState);
 
+	// Default rasterizer state (https://learn.microsoft.com/windows/win32/api/d3d11_3/ns-d3d11_3-d3d11_rasterizer_desc2)
+	static constexpr D3D11_RASTERIZER_DESC2 default_rasterizer_desc = {
+		/* FillMode = */
+		D3D11_FILL_SOLID,
+		/* CullMode = */
+		D3D11_CULL_BACK,
+		/* FrontCounterClockwise = */
+		FALSE,
+		/* DepthBias = */
+		0,
+		/* SlopeScaledDepthBias = */
+		0.0f,
+		/* DepthBiasClamp = */
+		0.0f,
+		/* DepthClipEnable = */
+		TRUE,
+		/* ScissorEnable = */
+		FALSE,
+		/* MultisampleEnable = */
+		FALSE,
+		/* AntialiasedLineEnable = */
+		FALSE,
+		/* ForcedSampleCount = */
+		0,
+		/* ConservativeRaster = */
+		D3D11_CONSERVATIVE_RASTERIZATION_MODE_OFF
+	};
+
 	D3D11_RASTERIZER_DESC2 internal_desc = {};
 	auto desc = reshade::d3d11::convert_rasterizer_desc(pRasterizerDesc);
 
@@ -1813,7 +1967,9 @@ HRESULT STDMETHODCALLTYPE D3D11Device::CreateRasterizerState2(const D3D11_RASTER
 
 		reshade::invoke_addon_event<reshade::addon_event::init_pipeline>(this, _global_pipeline_layout, static_cast<uint32_t>(std::size(subobjects)), subobjects, to_handle(pipeline));
 
-		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>())
+		if (reshade::has_addon_event<reshade::addon_event::destroy_pipeline>() &&
+			// Do not register destruction callback for default rasterizer state, since it is only destroyed during final device release, after 'destroy_device' event has already been called
+			std::memcmp(pRasterizerDesc, &default_rasterizer_desc, sizeof(D3D11_RASTERIZER_DESC2)) != 0)
 		{
 			register_destruction_callback_d3dx(pipeline, [this, pipeline]() {
 				reshade::invoke_addon_event<reshade::addon_event::destroy_pipeline>(this, to_handle(pipeline));

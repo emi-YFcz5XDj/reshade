@@ -52,7 +52,7 @@ void reshade::d3d10::device_impl::barrier(uint32_t count, const api::resource *r
 	if (transitions_away_from_shader_resource_usage != 0)
 	{
 #if 1
-#define UNBIND_SHADER_RESOURCE_VIEWS(stage) \
+#define RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS(stage) \
 		bool update_##stage = false; \
 		com_ptr<ID3D10ShaderResourceView> srvs_##stage[D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT]; \
 		_orig->stage##GetShaderResources(0, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<ID3D10ShaderResourceView **>(srvs_##stage)); \
@@ -72,16 +72,16 @@ void reshade::d3d10::device_impl::barrier(uint32_t count, const api::resource *r
 		if (update_##stage) \
 			_orig->stage##SetShaderResources(0, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, reinterpret_cast<ID3D10ShaderResourceView *const *>(srvs_##stage));
 #else
-#define UNBIND_SHADER_RESOURCE_VIEWS(stage) \
+#define RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS(stage) \
 		ID3D10ShaderResourceView *null_srvs_##stage[D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT] = {}; \
 		_orig->stage##SetShaderResources(0, D3D10_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT, null_srvs_##stage);
 #endif
 
-		UNBIND_SHADER_RESOURCE_VIEWS(VS);
-		UNBIND_SHADER_RESOURCE_VIEWS(GS);
-		UNBIND_SHADER_RESOURCE_VIEWS(PS);
+		RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS(VS);
+		RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS(GS);
+		RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS(PS);
 
-#undef UNBIND_SHADER_RESOURCE_VIEWS
+#undef RESHADE_D3D10_UNBIND_SHADER_RESOURCE_VIEWS
 	}
 }
 
@@ -533,7 +533,7 @@ void reshade::d3d10::device_impl::copy_texture_region(api::resource src, uint32_
 {
 	assert(src != 0 && dst != 0);
 	// Blit between different region dimensions is not supported
-	assert((src_box == nullptr && dst_box == nullptr) || (src_box != nullptr && dst_box != nullptr && dst_box->width() == src_box->width() && dst_box->height() == src_box->height() && dst_box->depth() == src_box->depth()));
+	assert(dst_box == nullptr || (src_box != nullptr && dst_box != nullptr && dst_box->width() == src_box->width() && dst_box->height() == src_box->height() && dst_box->depth() == src_box->depth()));
 
 	_orig->CopySubresourceRegion(
 		reinterpret_cast<ID3D10Resource *>(dst.handle), dst_subresource, dst_box != nullptr ? dst_box->left : 0, dst_box != nullptr ? dst_box->top : 0, dst_box != nullptr ? dst_box->front : 0,

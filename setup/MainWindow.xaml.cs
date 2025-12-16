@@ -292,7 +292,22 @@ namespace ReShade.Setup
 			}
 
 			// Filter out invalid search paths (and those with remaining wildcards that were not handled above)
-			var validSearchPaths = searchPaths.Where(searchPath => searchPath.IndexOfAny(Path.GetInvalidPathChars()) < 0 && searchPath.IndexOf('*') < 0);
+			var validSearchPaths = searchPaths.Where(searchPath =>
+				{
+					if (searchPath.IndexOfAny(Path.GetInvalidPathChars()) < 0 && searchPath.IndexOf('*') < 0)
+					{
+						return false;
+					}
+					try
+					{
+						Path.GetFullPath(searchPath);
+						return true;
+					}
+					catch
+					{
+						return false;
+					}
+				});
 
 			// Avoid adding duplicate search paths (relative or absolute)
 			if (validSearchPaths.Any(searchPath => Path.GetFullPath(searchPath) == Path.GetFullPath(newPath)))
@@ -356,7 +371,22 @@ namespace ReShade.Setup
 				searchPaths = effectSearchPaths
 					.Where(searchPath => !string.IsNullOrWhiteSpace(searchPath))
 					.Select(searchPath => searchPath.EndsWith(wildcard) ? new KeyValuePair<string, bool>(searchPath.Remove(searchPath.Length - 1 - wildcard.Length), true) : new KeyValuePair<string, bool>(searchPath, false))
-					.Where(searchPath => searchPath.Key.IndexOfAny(Path.GetInvalidPathChars()) < 0 && searchPath.Key.IndexOf('*') < 0)
+					.Where(searchPath =>
+						{
+							if (searchPath.Key.IndexOfAny(Path.GetInvalidPathChars()) < 0 && searchPath.Key.IndexOf('*') < 0)
+							{
+								return false;
+							}
+							try
+							{
+								Path.GetFullPath(searchPath.Key);
+								return true;
+							}
+							catch
+							{
+								return false;
+							}
+						})
 					.Select(searchPath => new KeyValuePair<string, bool>(Path.GetFullPath(searchPath.Key), searchPath.Value))
 					.ToList();
 			}
@@ -1203,12 +1233,15 @@ In that event here are some steps you can try to resolve this:
 
 				if (compatibilityIni.HasValue(executableName, "DepthCopyBeforeClears") ||
 					compatibilityIni.HasValue(executableName, "DepthCopyAtClearIndex") ||
+					compatibilityIni.HasValue(executableName, "DrawStatsHeuristic") ||
 					compatibilityIni.HasValue(executableName, "UseAspectRatioHeuristics"))
 				{
 					config.SetValue("DEPTH", "DepthCopyBeforeClears",
 						compatibilityIni.GetString(executableName, "DepthCopyBeforeClears", "0"));
 					config.SetValue("DEPTH", "DepthCopyAtClearIndex",
 						compatibilityIni.GetString(executableName, "DepthCopyAtClearIndex", "0"));
+					config.SetValue("DEPTH", "DrawStatsHeuristic",
+						compatibilityIni.GetString(executableName, "DrawStatsHeuristic", "0"));
 					config.SetValue("DEPTH", "UseAspectRatioHeuristics",
 						compatibilityIni.GetString(executableName, "UseAspectRatioHeuristics", "1"));
 				}
@@ -1399,7 +1432,7 @@ In that event here are some steps you can try to resolve this:
 			// Add default search paths if no config exists
 			if (!config.HasValue("GENERAL", "EffectSearchPaths") && !config.HasValue("GENERAL", "TextureSearchPaths"))
 			{
-				WriteSearchPaths(".\\reshade-shaders\\Shaders", ".\\reshade-shaders\\Textures");
+				WriteSearchPaths(".\\reshade-shaders\\Shaders\\**", ".\\reshade-shaders\\Textures\\**");
 			}
 
 			InstallStep_Finish();
@@ -1983,7 +2016,14 @@ In that event here are some steps you can try to resolve this:
 
 		void OnSkipButtonClick(object sender, RoutedEventArgs e)
 		{
-			InstallStep_Finish();
+			if (CurrentPage.Content is SelectEffectsPage)
+			{
+				InstallStep_CheckAddons();
+			}
+			else
+			{
+				InstallStep_Finish();
+			}
 		}
 		void OnCancelButtonClick(object sender, RoutedEventArgs e)
 		{

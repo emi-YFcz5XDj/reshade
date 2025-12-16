@@ -269,7 +269,7 @@ struct __declspec(uuid("e006e162-33ac-4b9f-b10f-0e15335c7bdb")) generic_depth_de
 			if (backup.depth_stencil_resource != 0)
 				continue;
 
-			assert(backup.references == 0 && backup.destroy_after_frame != std::numeric_limits<uint64_t>::max());
+			assert(backup.references == 0 && backup.destroy_after_frame != std::numeric_limits<uint64_t>::max() && backup.backup_texture != 0);
 
 			const resource_desc existing_desc = device->get_resource_desc(backup.backup_texture);
 			if (desc.texture.width == existing_desc.texture.width &&
@@ -278,25 +278,24 @@ struct __declspec(uuid("e006e162-33ac-4b9f-b10f-0e15335c7bdb")) generic_depth_de
 				desc.usage == existing_desc.usage)
 			{
 				backup.references++;
-				backup.depth_stencil_resource = resource;
 				backup.destroy_after_frame = std::numeric_limits<uint64_t>::max();
+				backup.depth_stencil_resource = resource;
 
 				return &backup;
 			}
 		}
 
-		depth_stencil_backup &backup = depth_stencil_backups.emplace_back();
-		backup.depth_stencil_resource = resource;
+		depth_stencil_backup new_backup;
+		new_backup.depth_stencil_resource = resource;
 
-		if (device->create_resource(desc, nullptr, resource_usage::copy_dest, &backup.backup_texture))
+		if (device->create_resource(desc, nullptr, resource_usage::copy_dest, &new_backup.backup_texture))
 		{
-			device->set_resource_name(backup.backup_texture, "ReShade depth backup texture");
+			device->set_resource_name(new_backup.backup_texture, "ReShade depth backup texture");
 
-			return &backup;
+			return &depth_stencil_backups.emplace_back(std::move(new_backup));
 		}
 		else
 		{
-			depth_stencil_backups.pop_back();
 			reshade::log::message(reshade::log::level::error, "Failed to create backup depth-stencil texture!");
 
 			return nullptr;
@@ -359,7 +358,7 @@ static bool check_aspect_ratio(float width_to_check, float height_to_check, floa
 	if (s_aspect_ratio_heuristic == aspect_ratio_heuristic::match_resolution_exactly || (s_aspect_ratio_heuristic == aspect_ratio_heuristic::match_custom_resolution_exactly && s_custom_resolution_filtering[0] == 0 && s_custom_resolution_filtering[1] == 0))
 		return width_to_check == width && height_to_check == height;
 	if (s_aspect_ratio_heuristic == aspect_ratio_heuristic::match_custom_resolution_exactly)
-		return width_to_check == s_custom_resolution_filtering[0] && width_to_check == s_custom_resolution_filtering[1];
+		return width_to_check == s_custom_resolution_filtering[0] && height_to_check == s_custom_resolution_filtering[1];
 
 	float w_ratio = width / width_to_check;
 	float h_ratio = height / height_to_check;
@@ -755,8 +754,8 @@ static void on_bind_depth_stencil(command_list *cmd_list, uint32_t, const resour
 
 		// Make a backup of the depth texture before it is used differently, since in D3D12 or Vulkan the underlying memory may be aliased to a different resource, so cannot just access it at the end of the frame
 		if (s_preserve_depth_buffers == 2 &&
-			state.current_depth_stencil != 0 && depth_stencil == 0 && (
-			cmd_list->get_device()->get_api() == device_api::d3d12 || cmd_list->get_device()->get_api() == device_api::vulkan))
+			state.current_depth_stencil != 0 && depth_stencil == 0 &&
+			(cmd_list->get_device()->get_api() == device_api::d3d12 || cmd_list->get_device()->get_api() == device_api::vulkan))
 			on_clear_depth_impl(cmd_list, state, state.current_depth_stencil, clear_op::unbind_depth_stencil_view);
 	}
 
@@ -765,7 +764,7 @@ static void on_bind_depth_stencil(command_list *cmd_list, uint32_t, const resour
 static bool on_clear_depth_stencil(command_list *cmd_list, resource_view dsv, const float *depth, const uint8_t *, uint32_t, const rect *)
 {
 	// Ignore clears that do not affect the depth buffer (stencil clears)
-	if (depth != nullptr)
+	if (dsv != 0 && depth != nullptr)
 	{
 		auto &state = *cmd_list->get_private_data<state_tracking>();
 
@@ -943,7 +942,7 @@ static void on_begin_render_effects(effect_runtime *runtime, command_list *cmd_l
 
 	for (auto &[resource, info] : current_depth_stencil_resources)
 	{
-		if (info.last_counters.total_stats.drawcalls == 0 || info.last_counters.total_stats.vertices <= 3)
+		if (info.last_counters.total_stats.drawcalls == 0 || (info.last_counters.total_stats.vertices <= 3 && info.last_counters.total_stats.drawcalls_indirect == 0))
 			continue; // Skip unused
 
 		if (info.last_used_in_frame < device_data->frame_index || device_data->frame_index <= (info.first_used_in_frame + 1))
@@ -1297,8 +1296,9 @@ static void draw_settings_overlay(effect_runtime *runtime)
 
 		const bool selected = item.resource == data.selected_depth_stencil;
 		const bool candidate =
-			(s_format_filtering == 0 || check_depth_format(item.desc.texture.format)) &&
-			(s_aspect_ratio_heuristic == aspect_ratio_heuristic::none || check_aspect_ratio(static_cast<float>(item.desc.texture.width), static_cast<float>(item.desc.texture.height), static_cast<float>(frame_width), static_cast<float>(frame_height)));
+			!(item.snapshot.total_stats.drawcalls == 0 || (item.snapshot.total_stats.vertices <= 3 && item.snapshot.total_stats.drawcalls_indirect == 0)) &&
+			!(s_format_filtering != 0 && !check_depth_format(item.desc.texture.format)) &&
+			!(s_aspect_ratio_heuristic != aspect_ratio_heuristic::none && !check_aspect_ratio(static_cast<float>(item.desc.texture.width), static_cast<float>(item.desc.texture.height), static_cast<float>(frame_width), static_cast<float>(frame_height)));
 
 		char label[21];
 		std::snprintf(label, std::size(label), "%c 0x%016llx", (selected ? '>' : ' '), item.resource.handle);
@@ -1380,7 +1380,7 @@ static void draw_settings_overlay(effect_runtime *runtime)
 
 		ImGui::PushTextWrapPos();
 		if (has_msaa_depth_stencil)
-			ImGui::TextUnformatted("Not all depth buffers are available.\nYou may have to disable MSAA in the game settings for depth buffer detection to work!");
+			ImGui::TextUnformatted("Not all depth buffers are available.\nYou may have to disable MSAA (Multisample Anti-Aliasing) in the game settings for depth buffer detection to work!");
 		if (has_no_clear_operations)
 			ImGui::Text("No clear operations were found for the selected depth buffer.\n%s",
 				s_preserve_depth_buffers != 2 ? "Try enabling \"Copy depth buffer before fullscreen draw calls\" or disable \"Copy depth buffer before clear operations\"!" : "Disable \"Copy depth buffer before clear operations\" or select a different depth buffer!");

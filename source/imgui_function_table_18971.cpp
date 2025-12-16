@@ -4,7 +4,7 @@
  * SPDX-License-Identifier: BSD-3-Clause OR MIT
  */
 
-#if defined(RESHADE_API_LIBRARY_EXPORT) && RESHADE_ADDON
+#if defined(RESHADE_API_LIBRARY_EXPORT) && RESHADE_ADDON && RESHADE_GUI
 
 #include <new>
 #include "imgui_function_table_18971.hpp"
@@ -220,7 +220,9 @@ const imgui_function_table_18971 init_imgui_function_table_18971() { return {
 		return style;
 	},
 	g_imgui_function_table_19000.GetVersion,
-	[](const char *name, bool *p_open, ImGuiWindowFlags flags) -> bool { return g_imgui_function_table_19000.Begin(name, p_open, convert_window_flags(flags)); },
+	[](const char *name, bool *p_open, ImGuiWindowFlags flags) -> bool {
+		return g_imgui_function_table_19000.Begin(name, p_open, convert_window_flags(flags));
+	},
 	g_imgui_function_table_19000.End,
 	[](const char *str_id, const ImVec2 &size, bool border, ImGuiWindowFlags flags) -> bool {
 		ImGuiChildFlags child_flags = 0;

@@ -15,8 +15,8 @@
 #include <d3d11.h>
 #include <d3d12.h>
 #include <D3D12Downlevel.h>
-#include <GL/gl3w.h>
-#include <vulkan/vulkan.h>
+#include <glad/wgl.h>
+#include <glad/vulkan.h>
 
 extern HMODULE g_module_handle;
 extern std::filesystem::path g_reshade_dll_path;
@@ -26,12 +26,11 @@ extern std::filesystem::path g_target_executable_path;
 extern std::filesystem::path get_base_path(bool default_to_target_executable_path = false);
 extern std::filesystem::path get_module_path(HMODULE module);
 
+extern "C" PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char *pName);
+extern "C" PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char *pName);
+
 #define HR_CHECK(exp) { const HRESULT res = (exp); assert(SUCCEEDED(res)); }
 #define VK_CHECK(exp) { const VkResult res = (exp); assert(res == VK_SUCCESS); }
-
-#define VK_CALL_CMD(name, device, ...) reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name))(__VA_ARGS__)
-#define VK_CALL_DEVICE(name, device, ...) reinterpret_cast<PFN_##name>(vkGetDeviceProcAddr(device, #name))(device, __VA_ARGS__)
-#define VK_CALL_INSTANCE(name, instance, ...) reinterpret_cast<PFN_##name>(vkGetInstanceProcAddr(instance, #name))(__VA_ARGS__)
 
 struct scoped_module_handle
 {
@@ -217,10 +216,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			HR_CHECK(D3D10CreateDeviceAndSwapChain(nullptr, D3D10_DRIVER_TYPE_HARDWARE, nullptr, flags, D3D10_SDK_VERSION, &desc, &swapchain, &device));
 		}
 
-		com_ptr<ID3D10Texture2D> backbuffer;
-		HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)));
-		com_ptr<ID3D10RenderTargetView> target;
-		HR_CHECK(device->CreateRenderTargetView(backbuffer.get(), nullptr, &target));
+		com_ptr<ID3D10Texture2D> back_buffer;
+		HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)));
+		com_ptr<ID3D10RenderTargetView> back_buffer_rtv;
+		HR_CHECK(device->CreateRenderTargetView(back_buffer.get(), nullptr, &back_buffer_rtv));
 
 		while (true)
 		{
@@ -231,19 +230,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 			if (s_resize_w != 0)
 			{
-				target.reset();
-				backbuffer.reset();
+				back_buffer_rtv.reset();
+				back_buffer.reset();
 
 				HR_CHECK(swapchain->ResizeBuffers(1, s_resize_w, s_resize_h, DXGI_FORMAT_UNKNOWN, 0));
 
-				HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)));
-				HR_CHECK(device->CreateRenderTargetView(backbuffer.get(), nullptr, &target));
+				HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)));
+				HR_CHECK(device->CreateRenderTargetView(back_buffer.get(), nullptr, &back_buffer_rtv));
 
 				s_resize_w = s_resize_h = 0;
 			}
 
 			const float color[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
-			device->ClearRenderTargetView(target.get(), color);
+			device->ClearRenderTargetView(back_buffer_rtv.get(), color);
 
 			HR_CHECK(swapchain->Present(1, 0));
 		}
@@ -278,10 +277,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			HR_CHECK(D3D11CreateDeviceAndSwapChain(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, nullptr, 0, D3D11_SDK_VERSION, &desc, &swapchain, &device, nullptr, &immediate_context));
 		}
 
-		com_ptr<ID3D11Texture2D> backbuffer;
-		HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)));
-		com_ptr<ID3D11RenderTargetView> target;
-		HR_CHECK(device->CreateRenderTargetView(backbuffer.get(), nullptr, &target));
+		com_ptr<ID3D11Texture2D> back_buffer;
+		HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)));
+		com_ptr<ID3D11RenderTargetView> back_buffer_rtv;
+		HR_CHECK(device->CreateRenderTargetView(back_buffer.get(), nullptr, &back_buffer_rtv));
 
 		while (true)
 		{
@@ -292,19 +291,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 			if (s_resize_w != 0)
 			{
-				target.reset();
-				backbuffer.reset();
+				back_buffer_rtv.reset();
+				back_buffer.reset();
 
 				HR_CHECK(swapchain->ResizeBuffers(1, s_resize_w, s_resize_h, DXGI_FORMAT_UNKNOWN, 0));
 
-				HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&backbuffer)));
-				HR_CHECK(device->CreateRenderTargetView(backbuffer.get(), nullptr, &target));
+				HR_CHECK(swapchain->GetBuffer(0, IID_PPV_ARGS(&back_buffer)));
+				HR_CHECK(device->CreateRenderTargetView(back_buffer.get(), nullptr, &back_buffer_rtv));
 
 				s_resize_w = s_resize_h = 0;
 			}
 
 			const float color[4] = { 0.5f, 0.5f, 0.5f, 1.0f };
-			immediate_context->ClearRenderTargetView(target.get(), color);
+			immediate_context->ClearRenderTargetView(back_buffer_rtv.get(), color);
 
 			HR_CHECK(swapchain->Present(1, 0));
 		}
@@ -330,7 +329,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		com_ptr<IDXGIFactory2> dxgi_factory;
 		com_ptr<ID3D12CommandQueue> command_queue;
 		com_ptr<IDXGISwapChain3> swapchain;
-		com_ptr<ID3D12Resource> backbuffers[3];
+		com_ptr<ID3D12Resource> back_buffers[3];
 		com_ptr<ID3D12DescriptorHeap> rtv_heap;
 		com_ptr<ID3D12CommandAllocator> cmd_alloc;
 		com_ptr<ID3D12GraphicsCommandList> cmd_lists[3];
@@ -354,7 +353,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			HR_CHECK(device->CreateCommandQueue(&desc, IID_PPV_ARGS(&command_queue)));
 		}
 
-		const UINT num_buffers = is_d3d12on7 ? 1 : ARRAYSIZE(backbuffers);
+		const UINT num_buffers = is_d3d12on7 ? 1 : ARRAYSIZE(back_buffers);
 
 		if (!is_d3d12on7)
 		{
@@ -389,10 +388,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		{
 			if (!is_d3d12on7)
 			{
-				HR_CHECK(swapchain->GetBuffer(i, IID_PPV_ARGS(&backbuffers[i])));
+				HR_CHECK(swapchain->GetBuffer(i, IID_PPV_ARGS(&back_buffers[i])));
 
 				const std::wstring debug_name = L"Back buffer " + std::to_wstring(i);
-				backbuffers[i]->SetName(debug_name.c_str());
+				back_buffers[i]->SetName(debug_name.c_str());
 			}
 			else
 			{
@@ -408,15 +407,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 				D3D12_HEAP_PROPERTIES props = { D3D12_HEAP_TYPE_DEFAULT };
 				// Create a fake back buffer resource for d3d12on7
-				HR_CHECK(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&backbuffers[i])));
+				HR_CHECK(device->CreateCommittedResource(&props, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&back_buffers[i])));
 			}
 
-			device->CreateRenderTargetView(backbuffers[i].get(), nullptr, rtv_handle);
+			device->CreateRenderTargetView(back_buffers[i].get(), nullptr, rtv_handle);
 
 			HR_CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, cmd_alloc.get(), nullptr, IID_PPV_ARGS(&cmd_lists[i])));
 
 			D3D12_RESOURCE_BARRIER barrier = { D3D12_RESOURCE_BARRIER_TYPE_TRANSITION };
-			barrier.Transition.pResource = backbuffers[i].get();
+			barrier.Transition.pResource = back_buffers[i].get();
 			barrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
 			barrier.Transition.StateBefore = D3D12_RESOURCE_STATE_PRESENT;
 			barrier.Transition.StateAfter = D3D12_RESOURCE_STATE_RENDER_TARGET;
@@ -444,7 +443,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 				// Clean up current resources referencing the back buffer
 				for (auto &ptr : cmd_lists)
 					ptr.reset();
-				for (auto &ptr : backbuffers)
+				for (auto &ptr : back_buffers)
 					ptr.reset();
 
 				if (!is_d3d12on7)
@@ -470,7 +469,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 				HR_CHECK(command_queue->QueryInterface(&queue_downlevel));
 
 				// Windows 7 present path does not have a DXGI swap chain
-				HR_CHECK(queue_downlevel->Present(dummy_list.get(), backbuffers[swap_index].get(), window_handle, D3D12_DOWNLEVEL_PRESENT_FLAG_WAIT_FOR_VBLANK));
+				HR_CHECK(queue_downlevel->Present(dummy_list.get(), back_buffers[swap_index].get(), window_handle, D3D12_DOWNLEVEL_PRESENT_FLAG_WAIT_FOR_VBLANK));
 			}
 			else
 			{
@@ -489,7 +488,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		// Initialize OpenGL
 		const HWND temp_window_handle = CreateWindow(TEXT("STATIC"), nullptr, WS_POPUP, 0, 0, 0, 0, window_handle, nullptr, hInstance, nullptr);
 		if (temp_window_handle == nullptr)
-			return 0;
+			return 1;
 
 		const HDC hdc1 = GetDC(temp_window_handle);
 		const HDC hdc2 = GetDC(window_handle);
@@ -505,47 +504,60 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 		const HGLRC hglrc1 = wglCreateContext(hdc1);
 		if (hglrc1 == nullptr)
-			return 0;
+			return 1;
 
 		wglMakeCurrent(hdc1, hglrc1);
 
-		const auto wglChoosePixelFormatARB = reinterpret_cast<BOOL(WINAPI *)(HDC, const int *, const FLOAT *, UINT, int *, UINT *)>(wglGetProcAddress("wglChoosePixelFormatARB"));
-		const auto wglCreateContextAttribsARB = reinterpret_cast<HGLRC(WINAPI *)(HDC, HGLRC, const int *)>(wglGetProcAddress("wglCreateContextAttribsARB"));
+		if (!gladLoadWGL(hdc1,
+				[](const char *name) -> GLADapiproc {
+					return reinterpret_cast<GLADapiproc>(wglGetProcAddress(name));
+				}))
+			return 1;
 
 		const int pix_attribs[] = {
-			0x2011 /* WGL_DOUBLE_BUFFER_ARB */, 1,
-			0x2001 /* WGL_DRAW_TO_WINDOW_ARB */, 1,
-			0x2010 /* WGL_SUPPORT_OPENGL_ARB */, 1,
-			0x2013 /* WGL_PIXEL_TYPE_ARB */, 0x202B /* WGL_TYPE_RGBA_ARB */,
-			0x2014 /* WGL_COLOR_BITS_ARB */, pfd.cColorBits,
-			0x201B /* WGL_ALPHA_BITS_ARB */, pfd.cAlphaBits,
-			0x2041 /* WGL_SAMPLE_BUFFERS_ARB */, multisample ? GL_TRUE : GL_FALSE,
-			0x2042 /* WGL_SAMPLES_ARB */, multisample ? 4 : 1,
+			WGL_DOUBLE_BUFFER_ARB, 1,
+			WGL_DRAW_TO_WINDOW_ARB, 1,
+			WGL_SUPPORT_OPENGL_ARB, 1,
+			WGL_PIXEL_TYPE_ARB, WGL_TYPE_RGBA_ARB,
+			WGL_COLOR_BITS_ARB, pfd.cColorBits,
+			WGL_ALPHA_BITS_ARB, pfd.cAlphaBits,
+			WGL_SAMPLE_BUFFERS_ARB, multisample ? GL_TRUE : GL_FALSE,
+			WGL_SAMPLES_ARB, multisample ? 4 : 1,
 			0 // Terminate list
 		};
 
 		UINT num_formats = 0;
 		if (!wglChoosePixelFormatARB(hdc2, pix_attribs, nullptr, 1, &pix_format, &num_formats))
-			return 0;
+			return 1;
 
 		SetPixelFormat(hdc2, pix_format, &pfd);
 
 		// Create an OpenGL 4.3 context
 		const int attribs[] = {
-			0x2091 /* WGL_CONTEXT_MAJOR_VERSION_ARB */, 4,
-			0x2092 /* WGL_CONTEXT_MINOR_VERSION_ARB */, 3,
+			WGL_CONTEXT_MAJOR_VERSION_ARB, 4,
+			WGL_CONTEXT_MINOR_VERSION_ARB, 3,
 			0 // Terminate list
 		};
 
 		const HGLRC hglrc2 = wglCreateContextAttribsARB(hdc2, nullptr, attribs);
 		if (hglrc2 == nullptr)
-			return 0;
+			return 1;
 
 		wglMakeCurrent(nullptr, nullptr);
 		wglDeleteContext(hglrc1);
 		DestroyWindow(temp_window_handle);
 
 		wglMakeCurrent(hdc2, hglrc2);
+
+		GladGLContext gl = {};
+		if (!gladLoadGLContextUserPtr(&gl,
+				[](void *user, const char *name) -> GLADapiproc {
+					FARPROC proc_address = wglGetProcAddress(name);
+					if (nullptr == proc_address)
+						proc_address = GetProcAddress(static_cast<HMODULE>(user), name);
+					return reinterpret_cast<GLADapiproc>(proc_address);
+				}, opengl_module.module))
+			return 1;
 
 		while (true)
 		{
@@ -556,13 +568,13 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 
 			if (s_resize_w != 0)
 			{
-				glViewport(0, 0, s_resize_w, s_resize_h);
+				gl.Viewport(0, 0, s_resize_w, s_resize_h);
 
 				s_resize_w = s_resize_h = 0;
 			}
 
-			glClearColor(0.5f, 0.5f, 0.5f, 1.0f);
-			glClear(GL_COLOR_BUFFER_BIT);
+			gl.ClearColor(0.5f, 0.5f, 0.5f, 1.0f);
+			gl.Clear(GL_COLOR_BUFFER_BIT);
 
 #if 1
 			wglSwapLayerBuffers(hdc2, WGL_SWAP_MAIN_PLANE); // Call directly for RenderDoc compatibility
@@ -581,13 +593,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 	{
 		const scoped_module_handle vulkan_module(L"vulkan-1.dll");
 
-		VkDevice device = VK_NULL_HANDLE;
-		VkInstance instance = VK_NULL_HANDLE;
+		struct vulkan_instance_and_device_type
+		{
+			VkDevice device_handle = VK_NULL_HANDLE;
+			VkInstance instance_handle = VK_NULL_HANDLE;
+		} vulkan_instance_and_device;
+
+		VkDevice &device = vulkan_instance_and_device.device_handle;
+		VkInstance &instance = vulkan_instance_and_device.instance_handle;
 		VkSurfaceKHR surface = VK_NULL_HANDLE;
 		VkSwapchainKHR swapchain = VK_NULL_HANDLE;
 		VkPhysicalDevice physical_device = VK_NULL_HANDLE;
 
-		{   VkApplicationInfo app_info { VK_STRUCTURE_TYPE_APPLICATION_INFO };
+		GladVulkanContext vk = {};
+		vk.CreateInstance = reinterpret_cast<PFN_vkCreateInstance>(vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkCreateInstance"));
+		if (vk.CreateInstance == nullptr)
+			return 1;
+
+		{	VkApplicationInfo app_info { VK_STRUCTURE_TYPE_APPLICATION_INFO };
 			app_info.apiVersion = VK_API_VERSION_1_0;
 			app_info.pApplicationName = "ReShade Test Application";
 			app_info.applicationVersion = VERSION_MAJOR * 10000 + VERSION_MINOR * 100 + VERSION_REVISION;
@@ -613,22 +636,28 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			create_info.enabledExtensionCount = ARRAYSIZE(enabled_extensions);
 			create_info.ppEnabledExtensionNames = enabled_extensions;
 
-			VK_CHECK(VK_CALL_INSTANCE(vkCreateInstance, VK_NULL_HANDLE, &create_info, nullptr, &instance));
+			VK_CHECK(vk.CreateInstance(&create_info, nullptr, &instance));
 		}
+
+		gladLoadVulkanContextUserPtr(&vk, VK_NULL_HANDLE,
+			[](void *user, const char *name) -> GLADapiproc {
+				const auto &vulkan_instance_and_device = *static_cast<const vulkan_instance_and_device_type *>(user);
+				return reinterpret_cast<GLADapiproc>(vkGetInstanceProcAddr(vulkan_instance_and_device.instance_handle, name));
+			}, &vulkan_instance_and_device);
 
 		// Pick the first physical device.
 		uint32_t num_physical_devices = 1;
-		VK_CHECK(VK_CALL_INSTANCE(vkEnumeratePhysicalDevices, instance, instance, &num_physical_devices, &physical_device));
+		VK_CHECK(vk.EnumeratePhysicalDevices(instance, &num_physical_devices, &physical_device));
 
 		// Pick the first queue with graphics support.
 		uint32_t queue_family_index = 0, num_queue_families = 0;
-		VK_CALL_INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties, instance, physical_device, &num_queue_families, nullptr);
+		vk.GetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queue_families, nullptr);
 		std::vector<VkQueueFamilyProperties> queue_families(num_queue_families);
-		VK_CALL_INSTANCE(vkGetPhysicalDeviceQueueFamilyProperties, instance, physical_device, &num_queue_families, queue_families.data());
+		vk.GetPhysicalDeviceQueueFamilyProperties(physical_device, &num_queue_families, queue_families.data());
 		for (uint32_t index = 0; index < num_queue_families && (queue_families[index].queueFlags & VK_QUEUE_GRAPHICS_BIT) == 0; ++index)
 			queue_family_index = index;
 
-		{   VkDeviceQueueCreateInfo queue_info { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
+		{	VkDeviceQueueCreateInfo queue_info { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO };
 			queue_info.queueCount = 1;
 			queue_info.queueFamilyIndex = queue_family_index;
 			float queue_priority = 1.0f;
@@ -655,42 +684,65 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			create_info.enabledExtensionCount = ARRAYSIZE(enabled_extensions);
 			create_info.ppEnabledExtensionNames = enabled_extensions;
 
-			VK_CHECK(VK_CALL_INSTANCE(vkCreateDevice, instance, physical_device, &create_info, nullptr, &device));
+			VK_CHECK(vk.CreateDevice(physical_device, &create_info, nullptr, &device));
 		}
 
-		{   VkWin32SurfaceCreateInfoKHR create_info { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
+		gladLoadVulkanContextUserPtr(&vk, physical_device,
+			[](void *user, const char *name) -> GLADapiproc {
+				const auto &vulkan_instance_and_device = *static_cast<const vulkan_instance_and_device_type *>(user);
+
+				// Need to distinguish between instance and device functions
+				if (0 == std::strcmp(name, "vkGetDeviceProcAddr") ||
+					0 == std::strcmp(name, "vkGetInstanceProcAddr") ||
+					0 == std::strcmp(name, "vkCreateDevice") ||
+					0 == std::strcmp(name, "vkCreateInstance") ||
+					0 == std::strcmp(name, "vkDestroyInstance") ||
+					0 == std::strcmp(name, "vkSubmitDebugUtilsMessageEXT") ||
+					0 == std::strcmp(name, "vkCreateDebugUtilsMessengerEXT") ||
+					0 == std::strcmp(name, "vkDestroyDebugUtilsMessengerEXT") ||
+					(std::strstr(name, "Properties") != nullptr && std::strstr(name, "AccelerationStructures") == nullptr && std::strstr(name, "Handle") == nullptr) ||
+					(std::strstr(name, "Surface") != nullptr && std::strstr(name, "DeviceGroupSurface") == nullptr) ||
+					(std::strstr(name, "PhysicalDevice") != nullptr))
+					return reinterpret_cast<GLADapiproc>(vkGetInstanceProcAddr(vulkan_instance_and_device.instance_handle, name));
+
+				const PFN_vkVoidFunction device_proc_address = vkGetDeviceProcAddr(vulkan_instance_and_device.device_handle, name);
+				return reinterpret_cast<GLADapiproc>(device_proc_address);
+			}, &vulkan_instance_and_device);
+
+		{	VkWin32SurfaceCreateInfoKHR create_info { VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR };
 			create_info.hinstance = hInstance;
 			create_info.hwnd = window_handle;
 
-			VK_CHECK(VK_CALL_INSTANCE(vkCreateWin32SurfaceKHR, instance, instance, &create_info, nullptr, &surface));
+			VK_CHECK(vk.CreateWin32SurfaceKHR(instance, &create_info, nullptr, &surface));
 
 			// Check presentation support to make validation layers happy
 			VkBool32 supported = VK_FALSE;
-			VK_CHECK(VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfaceSupportKHR, instance, physical_device, queue_family_index, surface, &supported));
+			VK_CHECK(vk.GetPhysicalDeviceSurfaceSupportKHR(physical_device, queue_family_index, surface, &supported));
 			assert(VK_FALSE != supported);
 		}
 
 		VkQueue queue = VK_NULL_HANDLE;
-		VK_CALL_DEVICE(vkGetDeviceQueue, device, queue_family_index, 0, &queue);
-		VkCommandPool cmd_alloc = VK_NULL_HANDLE;
-		std::vector<VkCommandBuffer> cmd_list;
+		vk.GetDeviceQueue(device, queue_family_index, 0, &queue);
 
-		{   VkCommandPoolCreateInfo create_info { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
+		VkCommandPool cmd_alloc = VK_NULL_HANDLE;
+		std::vector<VkCommandBuffer> cmd_buffers;
+
+		{	VkCommandPoolCreateInfo create_info { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO };
 			create_info.queueFamilyIndex = queue_family_index;
 
-			VK_CHECK(VK_CALL_DEVICE(vkCreateCommandPool, device, &create_info, nullptr, &cmd_alloc));
+			VK_CHECK(vk.CreateCommandPool(device, &create_info, nullptr, &cmd_alloc));
 		}
 
 		const auto resize_swapchain = [&](VkSwapchainKHR old_swapchain = VK_NULL_HANDLE) {
 			uint32_t num_present_modes = 0, num_surface_formats = 0;
-			VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfaceFormatsKHR, instance, physical_device, surface, &num_surface_formats, nullptr);
-			VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfacePresentModesKHR, instance, physical_device, surface, &num_present_modes, nullptr);
+			vk.GetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &num_surface_formats, nullptr);
+			vk.GetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &num_present_modes, nullptr);
 			std::vector<VkPresentModeKHR> present_modes(num_present_modes);
 			std::vector<VkSurfaceFormatKHR> surface_formats(num_surface_formats);
-			VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfaceFormatsKHR, instance, physical_device, surface, &num_surface_formats, surface_formats.data());
-			VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfacePresentModesKHR, instance, physical_device, surface, &num_present_modes, present_modes.data());
+			vk.GetPhysicalDeviceSurfaceFormatsKHR(physical_device, surface, &num_surface_formats, surface_formats.data());
+			vk.GetPhysicalDeviceSurfacePresentModesKHR(physical_device, surface, &num_present_modes, present_modes.data());
 			VkSurfaceCapabilitiesKHR capabilities = {};
-			VK_CALL_INSTANCE(vkGetPhysicalDeviceSurfaceCapabilitiesKHR, instance, physical_device, surface, &capabilities);
+			vk.GetPhysicalDeviceSurfaceCapabilitiesKHR(physical_device, surface, &capabilities);
 
 			VkSwapchainCreateInfoKHR create_info { VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR };
 			create_info.surface = surface;
@@ -707,33 +759,35 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			create_info.clipped = VK_TRUE;
 			create_info.oldSwapchain = old_swapchain;
 
-			VK_CHECK(VK_CALL_DEVICE(vkCreateSwapchainKHR, device, &create_info, nullptr, &swapchain));
+			VK_CHECK(vk.CreateSwapchainKHR(device, &create_info, nullptr, &swapchain));
 
 			if (old_swapchain != VK_NULL_HANDLE)
-				VK_CALL_DEVICE(vkDestroySwapchainKHR, device, old_swapchain, nullptr);
-			if (!cmd_list.empty())
-				VK_CALL_DEVICE(vkFreeCommandBuffers, device, cmd_alloc, uint32_t(cmd_list.size()), cmd_list.data());
+				vk.DestroySwapchainKHR(device, old_swapchain, nullptr);
 
 			uint32_t num_swapchain_images = 0;
-			VK_CHECK(VK_CALL_DEVICE(vkGetSwapchainImagesKHR, device, swapchain, &num_swapchain_images, nullptr));
+			VK_CHECK(vk.GetSwapchainImagesKHR(device, swapchain, &num_swapchain_images, nullptr));
 			std::vector<VkImage> swapchain_images(num_swapchain_images);
-			VK_CHECK(VK_CALL_DEVICE(vkGetSwapchainImagesKHR, device, swapchain, &num_swapchain_images, swapchain_images.data()));
+			VK_CHECK(vk.GetSwapchainImagesKHR(device, swapchain, &num_swapchain_images, swapchain_images.data()));
 
-			cmd_list.resize(num_swapchain_images);
+			if (!cmd_buffers.empty())
+				vk.FreeCommandBuffers(device, cmd_alloc, static_cast<uint32_t>(cmd_buffers.size()), cmd_buffers.data());
+			cmd_buffers.resize(num_swapchain_images);
 
-			{   VkCommandBufferAllocateInfo alloc_info { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
+			{	VkCommandBufferAllocateInfo alloc_info { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO };
 				alloc_info.commandPool = cmd_alloc;
 				alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-				alloc_info.commandBufferCount = num_swapchain_images;
+				alloc_info.commandBufferCount = static_cast<uint32_t>(cmd_buffers.size());
 
-				VK_CHECK(VK_CALL_DEVICE(vkAllocateCommandBuffers, device, &alloc_info, cmd_list.data()));
+				VK_CHECK(vk.AllocateCommandBuffers(device, &alloc_info, cmd_buffers.data()));
 			}
 
 			for (uint32_t i = 0; i < num_swapchain_images; ++i)
 			{
+				const VkCommandBuffer cmd_buffer = cmd_buffers[i];
+
 				VkCommandBufferBeginInfo begin_info { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO };
 				begin_info.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
-				VK_CHECK(VK_CALL_CMD(vkBeginCommandBuffer, device, cmd_list[i], &begin_info));
+				VK_CHECK(vk.BeginCommandBuffer(cmd_buffer, &begin_info));
 
 				const VkImageSubresourceRange range = { VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1 };
 
@@ -746,28 +800,32 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 				transition.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
 				transition.image = swapchain_images[i];
 				transition.subresourceRange = range;
-				VK_CALL_CMD(vkCmdPipelineBarrier, device, cmd_list[i], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+				vk.CmdPipelineBarrier(cmd_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
 
 				const VkClearColorValue color = { 0.5f, 0.5f, 0.5f, 1.0f };
-				VK_CALL_CMD(vkCmdClearColorImage, device, cmd_list[i], swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
+				vk.CmdClearColorImage(cmd_buffer, swapchain_images[i], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &color, 1, &range);
 
 				transition.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
 				transition.dstAccessMask = 0;
 				transition.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
 				transition.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
-				VK_CALL_CMD(vkCmdPipelineBarrier, device, cmd_list[i], VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
+				vk.CmdPipelineBarrier(cmd_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &transition);
 
-				VK_CHECK(VK_CALL_CMD(vkEndCommandBuffer, device, cmd_list[i]));
+				VK_CHECK(vk.EndCommandBuffer(cmd_buffer));
 			}
 		};
 
 		resize_swapchain();
 
-		VkSemaphore sem_acquire = VK_NULL_HANDLE;
-		VkSemaphore sem_present = VK_NULL_HANDLE;
-		{   VkSemaphoreCreateInfo create_info { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
-			VK_CHECK(VK_CALL_DEVICE(vkCreateSemaphore, device, &create_info, nullptr, &sem_acquire));
-			VK_CHECK(VK_CALL_DEVICE(vkCreateSemaphore, device, &create_info, nullptr, &sem_present));
+		uint32_t sem_index = 0;
+		std::vector<VkSemaphore> cmd_semaphores(4);
+		std::vector<VkSemaphore> acquire_semaphores(4);
+
+		for (size_t i = 0; i < cmd_semaphores.size(); ++i)
+		{
+			VkSemaphoreCreateInfo create_info { VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+			VK_CHECK(vk.CreateSemaphore(device, &create_info, nullptr, &cmd_semaphores[i]));
+			VK_CHECK(vk.CreateSemaphore(device, &create_info, nullptr, &acquire_semaphores[i]));
 		}
 
 		while (true)
@@ -785,30 +843,31 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 			}
 
 			uint32_t swapchain_image_index = 0;
+			sem_index = (sem_index + 1) % cmd_semaphores.size();
 
-			VkResult present_res = VK_CALL_DEVICE(vkAcquireNextImageKHR, device, swapchain, UINT64_MAX, sem_acquire, VK_NULL_HANDLE, &swapchain_image_index);
+			VkResult present_res = vk.AcquireNextImageKHR(device, swapchain, UINT64_MAX, acquire_semaphores[sem_index], VK_NULL_HANDLE, &swapchain_image_index);
 			if (present_res == VK_SUCCESS)
 			{
 				VkSubmitInfo submit_info { VK_STRUCTURE_TYPE_SUBMIT_INFO };
 				submit_info.waitSemaphoreCount = 1;
-				VkPipelineStageFlags wait_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
-				submit_info.pWaitDstStageMask = &wait_mask;
-				submit_info.pWaitSemaphores = &sem_acquire;
+				submit_info.pWaitSemaphores = &acquire_semaphores[sem_index];
+				const VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+				submit_info.pWaitDstStageMask = &wait_stage;
 				submit_info.commandBufferCount = 1;
-				submit_info.pCommandBuffers = &cmd_list[swapchain_image_index];
+				submit_info.pCommandBuffers = &cmd_buffers[swapchain_image_index];
 				submit_info.signalSemaphoreCount = 1;
-				submit_info.pSignalSemaphores = &sem_present;
+				submit_info.pSignalSemaphores = &cmd_semaphores[sem_index];
 
-				VK_CHECK(VK_CALL_CMD(vkQueueSubmit, device, queue, 1, &submit_info, VK_NULL_HANDLE));
+				VK_CHECK(vk.QueueSubmit(queue, 1, &submit_info, VK_NULL_HANDLE));
 
 				VkPresentInfoKHR present_info { VK_STRUCTURE_TYPE_PRESENT_INFO_KHR };
 				present_info.waitSemaphoreCount = 1;
-				present_info.pWaitSemaphores = &sem_present;
+				present_info.pWaitSemaphores = &cmd_semaphores[sem_index];
 				present_info.swapchainCount = 1;
 				present_info.pSwapchains = &swapchain;
 				present_info.pImageIndices = &swapchain_image_index;
 
-				present_res = VK_CALL_CMD(vkQueuePresentKHR, device, queue, &present_info);
+				present_res = vk.QueuePresentKHR(queue, &present_info);
 			}
 
 			// Ignore out of date errors during presentation, since swap chain will be recreated on next minimize/maximize event anyway
@@ -817,16 +876,19 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR lpCmdLine, int nCmdShow
 		}
 
 		// Wait for all GPU work to finish before destroying objects
-		VK_CALL_DEVICE(vkDeviceWaitIdle, device);
+		vk.DeviceWaitIdle(device);
 
-		VK_CALL_DEVICE(vkDestroySemaphore, device, sem_acquire, nullptr);
-		VK_CALL_DEVICE(vkDestroySemaphore, device, sem_present, nullptr);
-		VK_CALL_DEVICE(vkFreeCommandBuffers, device, cmd_alloc, uint32_t(cmd_list.size()), cmd_list.data());
-		VK_CALL_DEVICE(vkDestroyCommandPool, device, cmd_alloc, nullptr);
-		VK_CALL_DEVICE(vkDestroySwapchainKHR, device, swapchain, nullptr);
-		VK_CALL_INSTANCE(vkDestroySurfaceKHR, instance, instance, surface, nullptr);
-		VK_CALL_DEVICE(vkDestroyDevice, device, nullptr);
-		VK_CALL_INSTANCE(vkDestroyInstance, instance, instance, nullptr);
+		for (size_t i = 0; i < cmd_semaphores.size(); ++i)
+		{
+			vk.DestroySemaphore(device, cmd_semaphores[i], nullptr);
+			vk.DestroySemaphore(device, acquire_semaphores[i], nullptr);
+		}
+		vk.FreeCommandBuffers(device, cmd_alloc, static_cast<uint32_t>(cmd_buffers.size()), cmd_buffers.data());
+		vk.DestroyCommandPool(device, cmd_alloc, nullptr);
+		vk.DestroySwapchainKHR(device, swapchain, nullptr);
+		vk.DestroySurfaceKHR(instance, surface, nullptr);
+		vk.DestroyDevice(device, nullptr);
+		vk.DestroyInstance(instance, nullptr);
 	}
 	#pragma endregion
 		break;

@@ -60,6 +60,14 @@ private:
 	bool _enable_16bit_types = false;
 	bool _flip_vert_y = false;
 
+	// Only write compatibility intrinsics to result if they are actually in use
+	bool _uses_fmod = false;
+	bool _uses_componentwise_or = false;
+	bool _uses_componentwise_and = false;
+	bool _uses_componentwise_cond = false;
+	bool _uses_control_flow_attributes = false;
+	bool _uses_derivative_control = false;
+
 	std::unordered_map<id, std::string> _names;
 	std::unordered_map<id, std::string> _blocks;
 	std::string _ubo_block;
@@ -69,14 +77,6 @@ private:
 	std::unordered_map<id, id> _remapped_sampler_variables;
 	std::unordered_map<std::string, uint32_t> _semantic_to_location;
 	std::vector<std::tuple<type, constant, id>> _constant_lookup;
-
-	// Only write compatibility intrinsics to result if they are actually in use
-	bool _uses_fmod = false;
-	bool _uses_componentwise_or = false;
-	bool _uses_componentwise_and = false;
-	bool _uses_componentwise_cond = false;
-	bool _uses_control_flow_attributes = false;
-	bool _uses_derivative_control = false;
 
 	std::string finalize_preamble() const
 	{
@@ -487,16 +487,18 @@ private:
 					s += std::signbit(data.as_float[i]) ? "1.0/0.0/*inf*/" : "-1.0/0.0/*-inf*/";
 					break;
 				}
-				char temp[64];
-				const std::to_chars_result res = std::to_chars(temp, temp + sizeof(temp), data.as_float[i]
+				{
+					char temp[64];
+					const std::to_chars_result res = std::to_chars(temp, temp + sizeof(temp), data.as_float[i]
 #if !defined(_HAS_COMPLETE_CHARCONV) || _HAS_COMPLETE_CHARCONV
-					, std::chars_format::scientific, 8
+						, std::chars_format::scientific, 8
 #endif
-					);
-				if (res.ec == std::errc())
-					s.append(temp, res.ptr);
-				else
-					assert(false);
+						);
+					if (res.ec == std::errc())
+						s.append(temp, res.ptr);
+					else
+						assert(false);
+				}
 				break;
 			default:
 				assert(false);
@@ -647,6 +649,8 @@ private:
 
 	std::string escape_name(std::string name) const
 	{
+		assert(!name.empty());
+
 		static const std::unordered_set<std::string> s_reserverd_names = {
 			"common", "partition", "input", "output", "active", "filter", "superp", "invariant",
 			"attribute", "varying", "buffer", "resource", "coherent", "readonly", "writeonly",
@@ -682,6 +686,9 @@ private:
 		// Remove duplicated underscore symbols from name which can occur due to namespaces but are not allowed in GLSL
 		for (size_t pos = 0; (pos = name.find("__", pos)) != std::string::npos;)
 			name.replace(pos, 2, "_x");
+		// Avoid name ending with an underscore for same reasons as above
+		if (name.back() == '_')
+			name.push_back('x');
 
 		return name;
 	}
@@ -705,6 +712,9 @@ private:
 			return "gl_LocalInvocationID";
 		if (semantic == "SV_DISPATCHTHREADID")
 			return "gl_GlobalInvocationID";
+
+		if (name.empty())
+			return std::string();
 
 		return escape_name(std::move(name));
 	}
@@ -805,7 +815,7 @@ private:
 	id   define_uniform(const location &loc, uniform &info) override
 	{
 		const id res = make_id();
-		define_name<naming::unique>(res, info.name);
+		define_name<naming::unique>(res, info.unique_name);
 
 		if (_uniforms_to_spec_constants && info.has_initializer_value)
 		{
@@ -824,7 +834,7 @@ private:
 			code += ' ' + id_to_name(res) + " = ";
 			if (!info.type.is_scalar())
 				write_type<false, false>(code, info.type);
-			code += "(SPEC_CONSTANT_" + info.name + ");\n";
+			code += "(SPEC_CONSTANT_" + info.unique_name + ");\n";
 
 			_module.spec_constants.push_back(info);
 		}
@@ -1482,31 +1492,27 @@ private:
 					expr_code += '[' + std::to_string(op.index) + ']';
 				break;
 			case expression::operation::op_swizzle:
-				if (op.from.is_matrix())
+				expr_code += '.';
+				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
+					expr_code += "xyzw"[op.swizzle[i]];
+				break;
+			case expression::operation::op_matrix_swizzle:
+				if (op.swizzle[1] < 0)
 				{
-					if (op.swizzle[1] < 0)
-					{
-						const char row = (op.swizzle[0] % 4);
-						const char col = (op.swizzle[0] - row) / 4;
+					const char row = (op.swizzle[0] % 4);
+					const char col = (op.swizzle[0] - row) / 4;
 
-						expr_code += '[';
-						expr_code += to_digit(row);
-						expr_code += "][";
-						expr_code += to_digit(col);
-						expr_code += ']';
-					}
-					else
-					{
-						// TODO: Implement matrix to vector swizzles
-						assert(false);
-						expr_code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
-					}
+					expr_code += '[';
+					expr_code += to_digit(row);
+					expr_code += "][";
+					expr_code += to_digit(col);
+					expr_code += ']';
 				}
 				else
 				{
-					expr_code += '.';
-					for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
-						expr_code += "xyzw"[op.swizzle[i]];
+					// TODO: Implement matrix to vector swizzles
+					assert(false);
+					expr_code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
 				}
 				break;
 			}
@@ -1568,31 +1574,27 @@ private:
 				code += '[' + std::to_string(op.index) + ']';
 				break;
 			case expression::operation::op_swizzle:
-				if (op.from.is_matrix())
+				code += '.';
+				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
+					code += "xyzw"[op.swizzle[i]];
+				break;
+			case expression::operation::op_matrix_swizzle:
+				if (op.swizzle[1] < 0)
 				{
-					if (op.swizzle[1] < 0)
-					{
-						const char row = (op.swizzle[0] % 4);
-						const char col = (op.swizzle[0] - row) / 4;
+					const char row = (op.swizzle[0] % 4);
+					const char col = (op.swizzle[0] - row) / 4;
 
-						code += '[';
-						code += '1' + row - 1;
-						code += "][";
-						code += '1' + col - 1;
-						code += ']';
-					}
-					else
-					{
-						// TODO: Implement matrix to vector swizzles
-						assert(false);
-						code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
-					}
+					code += '[';
+					code += '1' + row - 1;
+					code += "][";
+					code += '1' + col - 1;
+					code += ']';
 				}
 				else
 				{
-					code += '.';
-					for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
-						code += "xyzw"[op.swizzle[i]];
+					// TODO: Implement matrix to vector swizzles
+					assert(false);
+					code += "_NOT_IMPLEMENTED_"; // Make sure compilation fails
 				}
 				break;
 			}
@@ -2274,6 +2276,10 @@ private:
 			code += "\treturn ";
 			write_constant(code, return_type, constant());
 			code += ";\n";
+		}
+		else
+		{
+			code += "\treturn;\n";
 		}
 
 		return set_block(0);

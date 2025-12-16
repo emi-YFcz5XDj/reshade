@@ -197,6 +197,11 @@ namespace reshade { namespace api
 		/// </summary>
 		dynamic = (1 << 3),
 		/// <summary>
+		/// Immutable resources can never be written to again after creationn, either by the CPU or the GPU.
+		/// The flag is only supported in D3D10 and D3D11.
+		/// </summary>
+		immutable = (1 << 4),
+		/// <summary>
 		/// Required to create <see cref="resource_view_type::texture_cube"/> or <see cref="resource_view_type::texture_cube_array"/> views of the resource.
 		/// </summary>
 		cube_compatible = (1 << 2),
@@ -260,7 +265,7 @@ namespace reshade { namespace api
 	/// </summary>
 	struct [[nodiscard]] resource_desc
 	{
-		constexpr resource_desc() : texture() {}
+		constexpr resource_desc() : texture({ 0, 0, 0, 0, format::unknown, 0 }) {}
 		constexpr resource_desc(uint64_t size, memory_heap heap, resource_usage usage, resource_flags flags = resource_flags::none) :
 			type(resource_type::buffer), buffer({ size }), heap(heap), usage(usage), flags(flags) {}
 		constexpr resource_desc(uint32_t width, uint32_t height, uint16_t layers, uint16_t levels, format format, uint16_t samples, memory_heap heap, resource_usage usage, resource_flags flags = resource_flags::none) :
@@ -379,7 +384,7 @@ namespace reshade { namespace api
 	/// </summary>
 	struct [[nodiscard]] resource_view_desc
 	{
-		constexpr resource_view_desc() : texture() {}
+		constexpr resource_view_desc() : texture({ 0, 0, 0, 0 }) {}
 		constexpr resource_view_desc(format format, uint64_t offset, uint64_t size) :
 			type(resource_view_type::buffer), format(format), buffer({ offset, size }) {}
 		constexpr resource_view_desc(format format, uint32_t first_level, uint32_t levels, uint32_t first_layer, uint32_t layers) :

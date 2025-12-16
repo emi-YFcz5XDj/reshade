@@ -15,6 +15,8 @@ reshade::vulkan::swapchain_impl::swapchain_impl(device_impl *device, VkSwapchain
 	_create_info(create_info),
 	_hwnd(hwnd)
 {
+	_create_info.pNext = nullptr;
+
 	assert(create_info.imageUsage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT);
 }
 
@@ -49,9 +51,9 @@ uint32_t reshade::vulkan::swapchain_impl::get_current_back_buffer_index() const
 bool reshade::vulkan::swapchain_impl::check_color_space_support(api::color_space color_space) const
 {
 	uint32_t num_formats = 0;
-	_device_impl->_instance_dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR(_device_impl->_physical_device, _create_info.surface, &num_formats, nullptr);
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(_device_impl->_physical_device, _create_info.surface, &num_formats, nullptr);
 	temp_mem<VkSurfaceFormatKHR> formats(num_formats);
-	_device_impl->_instance_dispatch_table.GetPhysicalDeviceSurfaceFormatsKHR(_device_impl->_physical_device, _create_info.surface, &num_formats, formats.p);
+	vk.GetPhysicalDeviceSurfaceFormatsKHR(_device_impl->_physical_device, _create_info.surface, &num_formats, formats.p);
 
 	for (uint32_t i = 0; i < num_formats; ++i)
 		if (formats[i].format == _create_info.imageFormat && formats[i].colorSpace == convert_color_space(color_space))

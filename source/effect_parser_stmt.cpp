@@ -6,6 +6,7 @@
 #include "effect_lexer.hpp"
 #include "effect_parser.hpp"
 #include "effect_codegen.hpp"
+#include <limits>
 #include <cctype> // std::toupper
 #include <cassert>
 #include <iterator> // std::back_inserter
@@ -1245,7 +1246,7 @@ bool reshadefx::parser::parse_function(type type, std::string name, shader_type 
 		},
 		[this]() {
 			leave_scope();
-			_codegen->leave_function();
+			_codegen->_current_function = nullptr;
 		});
 
 	while (!peek(')'))
@@ -1445,6 +1446,8 @@ bool reshadefx::parser::parse_function(type type, std::string name, shader_type 
 
 	if (!insert_symbol(name, symbol, true))
 	{
+		_codegen->leave_function();
+
 		error(function_location, 3003, "redefinition of '" + name + '\'');
 		return false;
 	}
@@ -1453,6 +1456,8 @@ bool reshadefx::parser::parse_function(type type, std::string name, shader_type 
 	{
 		if (!insert_symbol(param.name, { symbol_type::variable, param.id, param.type }))
 		{
+			_codegen->leave_function();
+
 			error(param.location, 3003, "redefinition of '" + param.name + '\'');
 			return false;
 		}
@@ -1467,6 +1472,8 @@ bool reshadefx::parser::parse_function(type type, std::string name, shader_type 
 	// Add implicit return statement to the end of functions
 	if (_codegen->is_in_block())
 		_codegen->leave_block_and_return();
+
+	_codegen->leave_function();
 
 	return parse_success;
 }
@@ -1590,6 +1597,10 @@ bool reshadefx::parser::parse_variable(type type, std::string name, bool global)
 		// Variables without a semantic may have an optional initializer
 		if (accept('='))
 		{
+			// The precise qualifier propagates to operations that contribute to the value assigned to the qualified variable
+			if (type.has(type::q_precise))
+				initializer.type.qualifiers |= type::q_precise;
+
 			if (!parse_expression_assignment(initializer))
 				return false;
 
@@ -1710,6 +1721,7 @@ bool reshadefx::parser::parse_variable(type type, std::string name, bool global)
 						{ "RGBA32U", uint32_t(texture_format::rgba32u) }, { "R32G32B32A32U", uint32_t(texture_format::rgba32u) },
 						{ "RGBA32F", uint32_t(texture_format::rgba32f) }, { "R32G32B32A32F", uint32_t(texture_format::rgba32f) },
 						{ "RGB10A2", uint32_t(texture_format::rgb10a2) }, { "R10G10B10A2", uint32_t(texture_format::rgb10a2) },
+						{ "RG11B10F", uint32_t(texture_format::rg11b10f) }, { "R11G11B10F", uint32_t(texture_format::rg11b10f) },
 					};
 
 					// Look up identifier in list of possible enumeration names
@@ -2006,6 +2018,10 @@ bool reshadefx::parser::parse_variable(type type, std::string name, bool global)
 		uniform uniform_info;
 		uniform_info.name = name;
 		uniform_info.type = type;
+
+		// Add namespace scope to avoid name clashes
+		uniform_info.unique_name = 'V' + current_scope().name + name;
+		std::replace(uniform_info.unique_name.begin(), uniform_info.unique_name.end(), ':', '_');
 
 		uniform_info.annotations = std::move(sampler_info.annotations);
 
@@ -2391,7 +2407,7 @@ bool reshadefx::parser::parse_technique_pass(pass &info)
 			state_exp.add_cast_operation({ type::t_uint, 1, 1 });
 			const unsigned int value = state_exp.constant.as_uint[0];
 
-#define SET_STATE_VALUE_INDEXED(name, info_name, value) \
+#define IMPLEMENT_STATE_VALUE_INDEXED(name, info_name, value) \
 	else if (constexpr size_t name##_len = sizeof(#name) - 1; state_name.compare(0, name##_len, #name) == 0 && \
 		(state_name.size() == name##_len || (state_name[name##_len] >= '0' && state_name[name##_len] < ('0' + static_cast<char>(std::size(info.info_name)))))) \
 	{ \
@@ -2406,17 +2422,17 @@ bool reshadefx::parser::parse_technique_pass(pass &info)
 				info.generate_mipmaps = (value != 0);
 			else if (state_name == "ClearRenderTargets")
 				info.clear_render_targets = (value != 0);
-			SET_STATE_VALUE_INDEXED(BlendEnable, blend_enable, value != 0)
-			SET_STATE_VALUE_INDEXED(SrcBlend, source_color_blend_factor, static_cast<blend_factor>(value))
-			SET_STATE_VALUE_INDEXED(SrcBlendAlpha, source_alpha_blend_factor, static_cast<blend_factor>(value))
-			SET_STATE_VALUE_INDEXED(BlendOp, color_blend_op, static_cast<blend_op>(value))
-			SET_STATE_VALUE_INDEXED(DestBlend, dest_color_blend_factor, static_cast<blend_factor>(value))
-			SET_STATE_VALUE_INDEXED(DestBlendAlpha, dest_alpha_blend_factor, static_cast<blend_factor>(value))
-			SET_STATE_VALUE_INDEXED(BlendOpAlpha, alpha_blend_op, static_cast<blend_op>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(BlendEnable, blend_enable, value != 0)
+			IMPLEMENT_STATE_VALUE_INDEXED(SrcBlend, source_color_blend_factor, static_cast<blend_factor>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(SrcBlendAlpha, source_alpha_blend_factor, static_cast<blend_factor>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(BlendOp, color_blend_op, static_cast<blend_op>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(DestBlend, dest_color_blend_factor, static_cast<blend_factor>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(DestBlendAlpha, dest_alpha_blend_factor, static_cast<blend_factor>(value))
+			IMPLEMENT_STATE_VALUE_INDEXED(BlendOpAlpha, alpha_blend_op, static_cast<blend_op>(value))
 			else if (state_name == "SRGBWriteEnable")
 				info.srgb_write_enable = (value != 0);
-			SET_STATE_VALUE_INDEXED(ColorWriteMask, render_target_write_mask, value & 0xFF)
-			SET_STATE_VALUE_INDEXED(RenderTargetWriteMask, render_target_write_mask, value & 0xFF)
+			IMPLEMENT_STATE_VALUE_INDEXED(ColorWriteMask, render_target_write_mask, value & 0xFF)
+			IMPLEMENT_STATE_VALUE_INDEXED(RenderTargetWriteMask, render_target_write_mask, value & 0xFF)
 			else if (state_name == "StencilEnable")
 				info.stencil_enable = (value != 0);
 			else if (state_name == "StencilReadMask" || state_name == "StencilMask")
@@ -2446,7 +2462,7 @@ bool reshadefx::parser::parse_technique_pass(pass &info)
 			else
 				error(state_location, 3004, "unrecognized pass state '" + state_name + '\'');
 
-#undef SET_STATE_VALUE_INDEXED
+#undef IMPLEMENT_STATE_VALUE_INDEXED
 		}
 
 		if (!expect(';'))

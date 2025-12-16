@@ -14,6 +14,13 @@
 
 using namespace reshadefx;
 
+static const char s_matrix_swizzles[16][5] = {
+	"_m00", "_m01", "_m02", "_m03",
+	"_m10", "_m11", "_m12", "_m13",
+	"_m20", "_m21", "_m22", "_m23",
+	"_m30", "_m31", "_m32", "_m33"
+};
+
 inline char to_digit(unsigned int value)
 {
 	assert(value < 10);
@@ -54,6 +61,10 @@ private:
 	bool _debug_info = false;
 	bool _uniforms_to_spec_constants = false;
 
+	// Only write compatibility intrinsics to result if they are actually in use
+	bool _uses_bitwise_cast = false;
+	bool _uses_bitwise_intrinsics = false;
+
 	std::unordered_map<id, std::string> _names;
 	std::unordered_map<id, std::string> _blocks;
 	std::string _cbuffer_block;
@@ -63,10 +74,6 @@ private:
 	std::string _remapped_semantics[15];
 	std::vector<std::tuple<type, constant, id>> _constant_lookup;
 	std::vector<sampler_binding> _sampler_lookup;
-
-	// Only write compatibility intrinsics to result if they are actually in use
-	bool _uses_bitwise_cast = false;
-	bool _uses_bitwise_intrinsics = false;
 
 	void optimize_bindings() override
 	{
@@ -140,7 +147,7 @@ private:
 			"uint" #n " r = 0;" \
 			"for (int i = 0; i < 32; i++) {" \
 				"r *= 2;" \
-				"r += floor(x % 2);" \
+				"r += floor(v % 2);" \
 				"v /= 2;" \
 			"}" \
 			"return r;" \
@@ -359,7 +366,7 @@ private:
 	}
 
 	template <bool is_param = false, bool is_decl = true>
-	void write_type(std::string &s, const type &type) const
+	void write_type(std::string &s, const type &type, texture_format format = texture_format::unknown) const
 	{
 		if constexpr (is_decl)
 		{
@@ -489,6 +496,11 @@ private:
 			s += "RWTexture";
 			s += to_digit(type.texture_dimension());
 			s += "D<";
+			if (format == texture_format::r8 || format == texture_format::r16 ||
+				format == texture_format::rg8 || format == texture_format::rg16 ||
+				format == texture_format::rgba8 || format == texture_format::rgba16 ||
+				format == texture_format::rgb10a2)
+				s += "unorm ";
 			s += "float";
 			if (type.rows > 1)
 				s += to_digit(type.rows);
@@ -570,16 +582,18 @@ private:
 					s += std::signbit(data.as_float[i]) ? "1.#INF" : "-1.#INF";
 					break;
 				}
-				char temp[64];
-				const std::to_chars_result res = std::to_chars(temp, temp + sizeof(temp), data.as_float[i]
+				{
+					char temp[64];
+					const std::to_chars_result res = std::to_chars(temp, temp + sizeof(temp), data.as_float[i]
 #if !defined(_HAS_COMPLETE_CHARCONV) || _HAS_COMPLETE_CHARCONV
-					, std::chars_format::scientific, 8
+						, std::chars_format::scientific, 8
 #endif
-					);
-				if (res.ec == std::errc())
-					s.append(temp, res.ptr);
-				else
-					assert(false);
+						);
+					if (res.ec == std::errc())
+						s.append(temp, res.ptr);
+					else
+						assert(false);
+				}
 				break;
 			default:
 				assert(false);
@@ -641,23 +655,25 @@ private:
 		case texture_format::rgba32u:
 			s += "uint4";
 			break;
+		case texture_format::r8:
+		case texture_format::r16:
+		case texture_format::rg8:
+		case texture_format::rg16:
+		case texture_format::rgba8:
+		case texture_format::rgba16:
+		case texture_format::rgb10a2:
+			s += "unorm float4";
+			break;
 		default:
 			assert(false);
 			[[fallthrough]];
 		case texture_format::unknown:
-		case texture_format::r8:
-		case texture_format::r16:
 		case texture_format::r16f:
 		case texture_format::r32f:
-		case texture_format::rg8:
-		case texture_format::rg16:
 		case texture_format::rg16f:
 		case texture_format::rg32f:
-		case texture_format::rgba8:
-		case texture_format::rgba16:
 		case texture_format::rgba16f:
 		case texture_format::rgba32f:
-		case texture_format::rgb10a2:
 			s += "float4";
 			break;
 		}
@@ -693,8 +709,6 @@ private:
 		{
 			if (semantic == "SV_POSITION")
 				return "POSITION"; // For pixel shaders this has to be "VPOS", so need to redefine that in post
-			if (semantic == "VPOS")
-				return "VPOS";
 			if (semantic == "SV_POINTSIZE")
 				return "PSIZE";
 			if (semantic.compare(0, 9, "SV_TARGET") == 0)
@@ -705,6 +719,8 @@ private:
 				return "TEXCOORD0 /* VERTEXID */";
 			if (semantic == "SV_ISFRONTFACE")
 				return "VFACE";
+			if (semantic.compare(0, 3, "SV_") == 0)
+				return semantic; // Unhandled system value semantic
 
 			size_t digit_index = semantic.size() - 1;
 			while (digit_index != 0 && semantic[digit_index] >= '0' && semantic[digit_index] <= '9')
@@ -807,7 +823,7 @@ private:
 				code += '[' + std::to_string(member.type.array_length) + ']';
 
 			if (!member.semantic.empty())
-				code += " : " + convert_semantic(member.semantic, std::max(1u, member.type.components() / 4) * std::max(1u, member.type.array_length));
+				code += " : " + convert_semantic(member.semantic, std::max(1u, member.type.components() / 4u) * std::max(1u, member.type.array_length));
 
 			code += ";\n";
 		}
@@ -881,7 +897,7 @@ private:
 			write_location(code, loc);
 
 			code += "static const ";
-			write_type(code, info.type);
+			write_type(code, info.type, tex_info.format);
 			code += ' ' + id_to_name(res) + " = { __" + info.unique_name + "_t, __s" + std::to_string(sampler_state_binding) + " };\n";
 		}
 		else
@@ -895,7 +911,7 @@ private:
 			write_location(code, loc);
 
 			code += "static const ";
-			write_type(code, info.type);
+			write_type(code, info.type, tex_info.format);
 			code += ' ' + id_to_name(res) + " = { __" + info.unique_name + "_s, float" + to_digit(texture_dimension) + '(';
 
 			if (tex_info.semantic.empty())
@@ -919,7 +935,7 @@ private:
 
 		return res;
 	}
-	id   define_storage(const location &loc, const texture &, storage &info) override
+	id   define_storage(const location &loc, const texture &tex_info, storage &info) override
 	{
 		const id res = info.id = create_block();
 		define_name<naming::unique>(res, info.unique_name);
@@ -936,7 +952,7 @@ private:
 			if (_shader_model >= 60)
 				code += "[[vk::binding(" + std::to_string(default_binding) + ", 3)]] "; // Descriptor set 3
 
-			write_type(code, info.type);
+			write_type(code, info.type, tex_info.format);
 			code += ' ' + info.unique_name + " : register(u" + std::to_string(default_binding) + ");\n";
 		}
 
@@ -947,7 +963,7 @@ private:
 	id   define_uniform(const location &loc, uniform &info) override
 	{
 		const id res = make_id();
-		define_name<naming::unique>(res, info.name);
+		define_name<naming::unique>(res, info.unique_name);
 
 		if (_uniforms_to_spec_constants && info.has_initializer_value)
 		{
@@ -966,7 +982,7 @@ private:
 			code += ' ' + id_to_name(res) + " = ";
 			if (!info.type.is_scalar())
 				write_type<false, false>(code, info.type);
-			code += "(SPEC_CONSTANT_" + info.name + ");\n";
+			code += "(SPEC_CONSTANT_" + info.unique_name + ");\n";
 
 			_module.spec_constants.push_back(info);
 		}
@@ -1094,7 +1110,7 @@ private:
 				code += '[' + std::to_string(param.type.array_length) + ']';
 
 			if (!param.semantic.empty())
-				code += " : " + convert_semantic(param.semantic, std::max(1u, param.type.cols / 4) * std::max(1u, param.type.array_length));
+				code += " : " + convert_semantic(param.semantic, std::max(1u, param.type.cols / 4u) * std::max(1u, param.type.array_length));
 
 			code += ',';
 		}
@@ -1192,9 +1208,6 @@ private:
 				if (func.type == shader_type::vertex)
 					// Keep track of the position output variable
 					position_variable_name = id_to_name(param.id);
-				else if (func.type == shader_type::pixel)
-					// Change the position input semantic in pixel shaders
-					param.semantic = "VPOS";
 			}
 		}
 
@@ -1280,13 +1293,6 @@ private:
 
 		const id res = make_id();
 
-		static const char s_matrix_swizzles[16][5] = {
-			"_m00", "_m01", "_m02", "_m03",
-			"_m10", "_m11", "_m12", "_m13",
-			"_m20", "_m21", "_m22", "_m23",
-			"_m30", "_m31", "_m32", "_m33"
-		};
-
 		std::string type, expr_code = id_to_name(exp.base);
 
 		for (const expression::operation &op : exp.chain)
@@ -1316,10 +1322,12 @@ private:
 			case expression::operation::op_swizzle:
 				expr_code += '.';
 				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
-					if (op.from.is_matrix())
-						expr_code += s_matrix_swizzles[op.swizzle[i]];
-					else
-						expr_code += "xyzw"[op.swizzle[i]];
+					expr_code += "xyzw"[op.swizzle[i]];
+				break;
+			case expression::operation::op_matrix_swizzle:
+				expr_code += '.';
+				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
+					expr_code += s_matrix_swizzles[op.swizzle[i]];
 				break;
 			}
 		}
@@ -1349,13 +1357,6 @@ private:
 
 		code += '\t' + id_to_name(exp.base);
 
-		static const char s_matrix_swizzles[16][5] = {
-			"_m00", "_m01", "_m02", "_m03",
-			"_m10", "_m11", "_m12", "_m13",
-			"_m20", "_m21", "_m22", "_m23",
-			"_m30", "_m31", "_m32", "_m33"
-		};
-
 		for (const expression::operation &op : exp.chain)
 		{
 			switch (op.op)
@@ -1373,10 +1374,12 @@ private:
 			case expression::operation::op_swizzle:
 				code += '.';
 				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
-					if (op.from.is_matrix())
-						code += s_matrix_swizzles[op.swizzle[i]];
-					else
-						code += "xyzw"[op.swizzle[i]];
+					code += "xyzw"[op.swizzle[i]];
+				break;
+			case expression::operation::op_matrix_swizzle:
+				code += '.';
+				for (int i = 0; i < 4 && op.swizzle[i] >= 0; ++i)
+					code += s_matrix_swizzles[op.swizzle[i]];
 				break;
 			}
 		}
@@ -2063,6 +2066,10 @@ private:
 			code += "\treturn ";
 			write_constant(code, return_type, constant());
 			code += ";\n";
+		}
+		else
+		{
+			code += "\treturn;\n";
 		}
 
 		return set_block(0);

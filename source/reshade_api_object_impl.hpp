@@ -12,7 +12,7 @@
 namespace reshade::api
 {
 	template <typename T, typename... api_object_base>
-	class api_object_impl : public api_object_base...
+	class __declspec(novtable) api_object_impl : public api_object_base...
 	{
 		static_assert(sizeof(T) <= sizeof(uint64_t));
 
@@ -55,6 +55,12 @@ namespace reshade::api
 		void get_private_data(const uint8_t guid[16], uint64_t *data) const final
 		{
 			assert(data != nullptr);
+
+			if (_private_data.empty()) // Early-out to avoid crash when this is called after the object was destroyed
+			{
+				*data = 0;
+				return;
+			}
 
 			if (const auto it = _private_data.find(*reinterpret_cast<const guid_t *>(guid));
 				it != _private_data.end())
