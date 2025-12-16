@@ -1,6 +1,10 @@
 name: build_disable_splash
 
-on: workflow_dispatch
+on:
+  push:
+    branches:
+      - disable_splash
+  workflow_dispatch:
 
 jobs:
   build:
